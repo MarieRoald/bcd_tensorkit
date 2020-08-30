@@ -322,13 +322,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         # Init dual variables
         if self.dual_variables is None or self.it_num == 1 or (not self._cache_components):
-            # TODO: Function here?
-            if self.dual_init == "zeros":
-                dual_variables = [np.zeros_like(aux_fm) for aux_fm in aux_fms]
-            elif self.dual_init == "random":
-                dual_variables = [np.random.standard_normal(aux_fm.shape)*np.median(np.abs(aux_fm)) for aux_fm in aux_fms]
-            else:
-                raise ValueError(f"Invalid dual init: {self.dual_init}")
+            dual_variables = self.init_duals(decomposition)
         else:
             dual_variables = self.dual_variables
 
@@ -398,6 +392,14 @@ class Parafac2ADMM(BaseParafac2SubProblem):
             return [self.constraint_prox(Bk, decomposition) for Bk in B]
         else:
             raise ValueError(f"Invalid aux init, {self.aux_init}")
+
+    def init_duals(self, decomposition):
+        if self.dual_init == "zeros":
+            return [np.zeros_like(Bk) for Bk in decomposition.B]
+        elif self.dual_init == "random":
+            return [np.random.standard_normal(Bk.shape)*np.median(np.abs(Bk)) for Bk in decomposition.B]
+        else:
+            raise ValueError(f"Invalid dual init: {self.dual_init}")
 
     def compute_next_aux_fms(self, decomposition, dual_variables):
         projections = decomposition.projection_matrices

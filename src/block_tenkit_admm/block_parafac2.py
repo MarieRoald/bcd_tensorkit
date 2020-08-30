@@ -216,7 +216,7 @@ def total_variation_prox(factor, strength):
     return _tv_prox.TotalVariation(factor, strength).prox()
 
 
-# TODO: Prox class for each kind of constraint
+# TODO: Prox class for each kind of constraint, that will significantly reduce no. arguments
 class Parafac2ADMM(BaseParafac2SubProblem):
     # TODO: docstring
     """
@@ -234,17 +234,18 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         rho=None,
         tol=1e-3,
         max_it=5,
+
         non_negativity=False,
         l2_similarity=None,
         l1_penalty=None,
         tv_penalty=None,
-        temporal_similarity=0,
         verbose=False,
         decay_num_it=False,
         num_it_converge_at=30,
         num_it_converge_to=5,
         cache_components=True,
         l2_solve_method=None,
+
         normalize_aux=False,
         normalize_other_modes=False,
         aux_init="same",  # same or random
@@ -263,15 +264,9 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.l2_similarity = l2_similarity
         self.l1_penalty = l1_penalty
         self.tv_penalty = tv_penalty
-        self.temporal_similarity = temporal_similarity
 
         self.l2_solve_method = l2_solve_method
 
-        if self.temporal_similarity > 0:
-            raise RuntimeError("This doesn't work")
-
-        if self.temporal_similarity > 0 and l2_similarity is None:
-            self.l2_similarity = 0
         if non_negativity and l2_similarity is not None:
             raise ValueError("Not implemented non negative similarity")
         if l2_similarity is not None and l1_penalty:
@@ -510,12 +505,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         if self.tv_penalty is not None:
             factor_matrices = np.array(factor_matrices)
             reg += self.tv_penalty*evolving_factor_total_variation(factor_matrices)
-        if self.temporal_similarity > 0:
-            for k, B_k in enumerate(factor_matrices):   # <- This should not be B_k
-                if k > 0:
-                    reg += self.temporal_similarity*(np.linalg.norm(B_k - factor_matrices[k-1])**2)
-                if k < len(factor_matrices) - 1:
-                    reg += self.temporal_similarity*(np.linalg.norm(B_k - factor_matrices[k+1])**2)
         return reg
     
     @property

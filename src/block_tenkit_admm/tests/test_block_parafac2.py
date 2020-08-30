@@ -102,30 +102,6 @@ class TestRLSSubproblem(BaseTestSubproblem):
     def test_non_negative_grad(self, random_nonnegative_rank4_ktensor):
         self.check_gradient(random_nonnegative_rank4_ktensor, non_negativity=True)
 
-class TestADMMSubproblem(BaseTestSubproblem):
-    # TODO: Check KKT instead of gradient
-    SubProblem = ADMMSubproblem
-    def test_minimum(self, random_nonnegative_rank4_ktensor):
-        super().test_minimum(random_nonnegative_rank4_ktensor, rho=1)
-
-    def test_unpenalized_grad(self, random_nonnegative_rank4_ktensor):
-        self.check_gradient(random_nonnegative_rank4_ktensor, 
-                            non_negativity=True,
-                            rho=1)
-
-    def test_non_negative_grad(self, random_nonnegative_rank4_ktensor):
-        self.check_gradient(random_nonnegative_rank4_ktensor, 
-                            non_negativity=True,
-                            rho=1)
-
-    def perturb_factor_matrix(self, factor_matrix, noise):
-        fm_norm = np.linalg.norm(factor_matrix)
-        factor_matrix_perturbed = (
-            factor_matrix + 
-            noise*(np.random.standard_normal(size=factor_matrix.shape)/fm_norm)
-        )
-        return np.maximum(0, factor_matrix_perturbed)
-
 class BaseTestParafac2Subproblem():
     SubProblem = None
 

@@ -343,7 +343,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
             if self.has_converged(decomposition):
                 break
         
-        # TODO: oppdater state hele tiden, ikke kun på slutten.
         self.callback(X, decomposition, init=False)
         self.it_num += 1
 
@@ -403,7 +402,10 @@ class Parafac2ADMM(BaseParafac2SubProblem):
                 P_k@blueprint_B + self.dual_variables[k], decomposition,
             ) for k, P_k in enumerate(projections)
         ]
-        # TODO: Kan vi gjøre dette under?
+        # Below, there is some code that will never be run. I tried introducing it and got some bugs,
+        # but I'm uncertain if it was this code or some other change I made. I therefore kept it
+        # planning to use it again later.
+        # TODO: Can we do this? Is it faster?
         Bks = [P_k@blueprint_B for P_k in projections]
         Bks = np.concatenate(Bks, axis=1)
         dual_variables = np.concatenate([dual_variable for dual_variable in self.dual_variables], axis=1)

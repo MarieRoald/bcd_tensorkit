@@ -8,7 +8,6 @@ import numpy as np
 import scipy.linalg as sla
 import scipy.sparse.linalg as spla
 import scipy.sparse as sparse
-from sklearn.linear_model import Lasso
 import pyamg
 
 from sklearn.utils.testing import ignore_warnings
@@ -85,7 +84,7 @@ class BaseParafac2SubProblem(BaseSubProblem):
     def __init__(self):
         pass
 
-    def minimise(self, X, decomposition, projected_X=None, should_update_projections=True):
+    def update_decomposition(self, X, decomposition, projected_X=None, should_update_projections=True):
         pass
 
 
@@ -210,14 +209,16 @@ class _SmartSymmetricSolver:
 
 
 def evolving_factor_total_variation(factor):
-    return TotalVariation(factor, 1).center_penalty()
+    return _tv_prox.TotalVariation(factor, 1).center_penalty()
 
 
 def total_variation_prox(factor, strength):
-    return TotalVariation(factor, strength).prox()
+    return _tv_prox.TotalVariation(factor, strength).prox()
 
 
+# TODO: Prox class for each kind of constraint
 class Parafac2ADMM(BaseParafac2SubProblem):
+    # TODO: docstring
     """
     To add new regularisers:
         * Change __init__
@@ -256,12 +257,8 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         self.rho = rho
         self.tol = tol
-        self._max_it = max_it
-        
-        self._decay_num_it = decay_num_it
-        self._num_it_converge_to = num_it_converge_to
-        self._num_it_decay_rate = (num_it_converge_to/max_it)**(1/num_it_converge_at)
-
+        self.max_it = max_it
+     
         self.non_negativity = non_negativity
         self.l2_similarity = l2_similarity
         self.l1_penalty = l1_penalty
@@ -304,23 +301,14 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         """
         self._callback(self, X, decomposition, aux_fms, dual_variable, init)
     
-    @property
-    def max_it(self):
-        converge_to = self._num_it_converge_to
-        if not self._decay_num_it or self._max_it <= converge_to:
-            return self._max_it
-        
-        self._max_it = int(self._num_it_decay_rate*self._max_it)
-        return self._max_it
-
-    
     def update_decomposition(
         self, X, decomposition, projected_X=None, should_update_projections=True
     ):
         # Clear caches
-        self._qr_cache = None
+        self._qr_cache = None  # TODO: Is this only used for QR?
         self._reg_solver = None
 
+        # Normalising other modes must happen before auto rho computation
         if self.normalize_other_modes:
             decomposition.C[...] /= np.linalg.norm(decomposition.C, axis=0, keepdims=True)
             decomposition.A[...] /= np.linalg.norm(decomposition.A, axis=0, keepdims=True)
@@ -329,7 +317,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         if self.auto_rho:
             self.rho, self._qr_cache = self.compute_auto_rho(decomposition)
 
-        # Init constraint by projecting the decomposition
+        # Init constraint
         if self.aux_fms is None or self.it_num == 1 or (not self._cache_components):
             aux_fms = self.init_constraint(decomposition)
         else:
@@ -340,6 +328,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         # Init dual variables
         if self.dual_variables is None or self.it_num == 1 or (not self._cache_components):
+            # TODO: Function here?
             if self.dual_init == "zeros":
                 dual_variables = [np.zeros_like(aux_fm) for aux_fm in aux_fms]
             elif self.dual_init == "random":
@@ -354,6 +343,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         # The decomposition is modified inplace each iteration
         for i in range(self.max_it):
+            # TODO: Write that we update the blueprint twice in the report?
             self.callback(X, decomposition, aux_fms, dual_variables, init=(i==0))
             self.update_blueprint(X, decomposition, aux_fms, dual_variables, projected_X)
 
@@ -362,19 +352,21 @@ class Parafac2ADMM(BaseParafac2SubProblem):
                 projected_X = self.compute_projected_X(decomposition.projection_matrices, X, out=projected_X)
 
             self.update_blueprint(X, decomposition, aux_fms, dual_variables, projected_X)
+
             old_aux_fms = aux_fms
             aux_fms = self.compute_next_aux_fms(decomposition, dual_variables)
             self.update_dual(decomposition, aux_fms, dual_variables)
 
             if self.has_converged(decomposition, aux_fms, old_aux_fms, dual_variables):
                 break
-
+        
+        # TODO: oppdater state hele tiden, ikke kun på slutten.
         self.callback(X, decomposition, aux_fms, dual_variables, init=False)
         self.dual_variables = dual_variables
         self.aux_fms = aux_fms
         self.it_num += 1
 
-    def compute_auto_rho(self, decomposition):     
+    def compute_auto_rho(self, decomposition):  # TODO: Rename to include QR cache     
         lhs = base.khatri_rao(
             decomposition.A, decomposition.C,
         )
@@ -399,7 +391,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         else:
             raise ValueError(f"Invalid aux init, {self.aux_init}")
 
-
     def compute_next_aux_fms(self, decomposition, dual_variables):
         projections = decomposition.projection_matrices
         blueprint_B = decomposition.blueprint_B
@@ -409,7 +400,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
                 P_k@blueprint_B + dual_variables[k], decomposition,
             ) for k, P_k in enumerate(projections)
         ]
-        
+        # TODO: Kan vi gjøre dette under?
         Bks = [P_k@blueprint_B for P_k in projections]
         Bks = np.concatenate(Bks, axis=1)
         dual_variables = np.concatenate([dual_variable for dual_variable in dual_variables], axis=1)
@@ -420,6 +411,8 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         ]
 
     def constraint_prox(self, x, decomposition):
+        # TODO: Comments
+        # TODO: Sjekk kompatiblitet med forskjellige proxes
         if self.non_negativity and self.l1_penalty:
             return np.maximum(x - 2*self.l1_penalty/self.rho, 0)
         elif self.tv_penalty:
@@ -444,6 +437,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
             return x
 
     def update_dual(self, decomposition, aux_fms, dual_variables):
+        # TODO: Kommentarer
         for P_k, aux_fm, dual_variable in zip(decomposition.projection_matrices, aux_fms, dual_variables):
             B_k = P_k@decomposition.blueprint_B
             dual_variable += B_k - aux_fm
@@ -487,6 +481,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         reg_rhs *= np.sqrt(self.rho/2)
         rhs = np.vstack([rhs, reg_rhs])
 
+        # TODO: Solve triangular?
         decomposition.blueprint_B[:] = np.linalg.solve(R, Q.T@rhs).T
         #decomposition.blueprint_B[:] = prox_reg_lstsq(lhs, rhs, self.rho, reg_lhs, reg_rhs).T
     
@@ -549,6 +544,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         return checkpoint_params
 
     def load_from_hdf5_group(self, group):
+        # TODO: This will crash if aux_fms and duals aren't stored, i.e. if we don't save aux_fms between iterations
         aux_fm_names = [dataset_name for dataset_name in group if dataset_name.startswith("aux_fm_")]
         aux_fm_names.sort()
         dual_names = [dataset_name for dataset_name in group if dataset_name.startswith("dual_var_")]
@@ -556,15 +552,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         self.aux_fms = [group[aux_fm_name][:] for aux_fm_name in aux_fm_names]
         self.dual_var = [group[dual_name][:] for dual_name in dual_names]
-
-    
-        
-class FlexibleParafac2ADMM(BaseParafac2SubProblem):
-    def __init__(self, non_negativity=True):
-        self.non_negativity = non_negativity
-
-    def update_decomposition(self,  X, decomposition, projected_X, update_projections):
-        pass
 
 
 class BlockParafac2(BaseDecomposer):
@@ -585,6 +572,7 @@ class BlockParafac2(BaseDecomposer):
         normalize_B=False,
         normalize_B_after_update=False
     ):
+        # Make sure that the second mode solves for evolving components
         if (
             not hasattr(sub_problems[1], '_is_pf2_evolving_mode') or 
             not sub_problems[1]._is_pf2_evolving_mode
@@ -624,54 +612,37 @@ class BlockParafac2(BaseDecomposer):
 
     @property
     def loss(self):
-        factor_matrices = [
-            self.decomposition.A,
-            np.array(self.decomposition.B),
-            self.decomposition.C
-        ]
-        return (
-            self.SSE + 
-            sum(sp.regulariser(fm) for sp, fm in zip(self.sub_problems, factor_matrices))
-        )
+        return self.SSE + self.regularisation_penalty
 
     def _update_parafac2_factors(self):
         should_update_projections = self.current_iteration % self.projection_update_frequency == 0
         # The function below updates the decomposition and the projected X inplace.
-        # print(f'Before {self.current_iteration:6d}A: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
+        # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
         l = self.loss
         if self.normalize_B:
             norms = np.linalg.norm(self.decomposition.blueprint_B, axis=0, keepdims=True)
             self.decomposition.blueprint_B[:] = self.decomposition.blueprint_B/norms
             self.decomposition.C[:] = self.decomposition.C*norms
-            print("hei")
+
         self.sub_problems[1].update_decomposition(
             self.X, self.decomposition, self.projected_X, should_update_projections=should_update_projections
         )
-
-        
-        print("B", l - self.loss)
-        l = self.loss
 
         if self.normalize_B_after_update:
             norms = np.linalg.norm(self.decomposition.blueprint_B, axis=0, keepdims=True)
             self.decomposition.blueprint_B[:] = self.decomposition.blueprint_B/norms
             self.decomposition.C[:] = self.decomposition.C*norms
-            print("hallo")
-        # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
+        # print(f'Before {self.current_iteration:6d}A: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
         self.sub_problems[0].update_decomposition(
             self.projected_X, self.cp_decomposition
         )
-        print("A", l - self.loss)
-        l = self.loss
         # print(f'Before {self.current_iteration:6d}C: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
         self.sub_problems[2].update_decomposition(
             self.projected_X, self.cp_decomposition
         )
-        print("C", l - self.loss)
-        print("loss", self.loss)
 
     def _fit(self):
         for it in range(self.max_its - self.current_iteration):
@@ -682,9 +653,9 @@ class BlockParafac2(BaseDecomposer):
             self._after_fit_iteration()
 
             if self.current_iteration % self.print_frequency == 0 and self.print_frequency > 0:
-                rel_change = np.asscalar(np.array(self._rel_function_change))
+                rel_change = self._rel_function_change
 
-                print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {np.asscalar(self.loss):4g}, '
+                print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
                       f'improvement is {rel_change:g}')
 
         if (
@@ -709,6 +680,8 @@ class BlockParafac2(BaseDecomposer):
             sse = self.SSE
             reg = self.regularisation_penalty
             loss = self.loss
+
+            # TODO: Do this check for all modes
             if hasattr(self.sub_problems[1], "_compute_relative_coupling_error"):
                 rel_coupling = self.sub_problems[1]._compute_relative_coupling_error(
                     self.decomposition.B,
@@ -718,18 +691,21 @@ class BlockParafac2(BaseDecomposer):
                 rel_coupling = 0
 
             is_first_it = (self.prev_sse is None)
-
+            # Used for printing
             self._rel_function_change = (self.prev_loss - loss)/self.prev_loss
 
             if is_first_it:
                 return False
 
+            # TODO: Double check coupling error convergence
+            # TODO: See if reg convergence should be checked for each mode separately
             # Convergence if 
             # (prev - curr)/prev < tol
             # prev - curr < prev*tol
             # prev - prev*tol - curr < 0
             # (1 - tol)prev - curr < 0
             # (1 - tol)prev < curr
+            print((self.prev_sse - sse)/self.prev_sse)
             tol = (1 - self.convergence_tol)**self.convergence_check_frequency
             has_converged = (sse >= tol*self.prev_sse) and (reg >= tol*self.prev_reg)
             has_converged = has_converged and (rel_coupling >= tol*self.prev_rel_coupling)
@@ -738,8 +714,6 @@ class BlockParafac2(BaseDecomposer):
             self.prev_reg = reg
             self.prev_sse = sse
             self.prev_rel_coupling = rel_coupling
-
-
 
         return has_converged
 
@@ -750,8 +724,8 @@ class BlockParafac2(BaseDecomposer):
         )
         self.projected_X = compute_projected_X(self.decomposition.projection_matrices, self.X)
         self.prev_loss = self.loss
-        self.prev_sse = None
-        self.prev_reg = None
+        self.prev_sse = self.SSE
+        self.prev_reg = self.regularisation_penalty
         self.prev_rel_coupling = None
         self._rel_function_change = np.inf
     
@@ -786,13 +760,11 @@ class BlockParafac2(BaseDecomposer):
         
         return extra_params
     
-    
     def load_checkpoint(self, checkpoint_path, load_it=None):
         """Load the specified checkpoint at the given iteration.
 
         If ``load_it=None``, then the latest checkpoint will be used.
         """
-        # TODO: classmethod, dump all params. Requires major refactoring.
         super().load_checkpoint(checkpoint_path, load_it=load_it)
         with h5py.File(checkpoint_path, "r") as h5:
             if 'final_iteration' not in h5.attrs:

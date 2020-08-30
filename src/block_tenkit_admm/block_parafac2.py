@@ -131,7 +131,7 @@ class Parafac2RLS(BaseParafac2SubProblem):
         return RLS._get_rightsolve(self)
 
 
-class _SmartSymmetricSolver:
+class _SmartSymmetricPDSolver:
     """Utility for when the same symmetric system will be solved many times.
     """
     supported_sparse = {"lu", "ilu", "amg", "amg_cg", "cg"}
@@ -364,7 +364,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
                 I = np.identity(self.l2_similarity.shape[0])
             reg_matrix = self.l2_similarity + 0.5*self.rho*I
 
-            self._reg_solver = _SmartSymmetricSolver(reg_matrix, method=self.l2_solve_method)
+            self._reg_solver = _SmartSymmetricPDSolver(reg_matrix, method=self.l2_solve_method)
 
     def init_constraint(self, decomposition):
         if self.aux_init == "same":

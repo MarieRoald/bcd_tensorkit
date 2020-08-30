@@ -226,7 +226,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         * Change regulariser
     """
     # In our notes: U -> dual variable
-    #               \tilde{B} -> aux_fms
+    #               \tilde{B} -> aux_factor_matrices
     #               B -> decomposition
     SKIP_CACHE = False
     def __init__(
@@ -281,7 +281,8 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self._qr_cache = None
         self._reg_solver = None
         self.dual_variables = None
-        self.aux_fms = None
+        self.aux_factor_matrices = None
+        self.prev_aux_factor_matrices = None
         self.it_num = 0
         self.normalize_aux = normalize_aux
         self.normalize_other_modes = normalize_other_modes
@@ -290,16 +291,15 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.dual_init = dual_init
 
         self._cache_components = cache_components
-        
         self._callback = noop
 
-    def callback(self, X, decomposition, aux_fms, dual_variable, init=False):
+    def callback(self, X, decomposition, init=False):
         """Calls self._callback, which should have the following signature:
         self._callback(self, X, decomposition, fm, aux_fm, dual_variable)
 
         By default callback does nothing.
         """
-        self._callback(self, X, decomposition, aux_fms, dual_variable, init)
+        self._callback(self, X, decomposition, self.aux_factor_matrices, self.dual_variables, init)
     
     def update_decomposition(
         self, X, decomposition, projected_X=None, should_update_projections=True
@@ -312,19 +312,15 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.prepare_for_update(decomposition)
 
         # Init constraint
-        if self.aux_fms is None or self.it_num == 1 or (not self._cache_components):
-            aux_fms = self.init_constraint(decomposition)
-        else:
-            aux_fms = self.aux_fms
+        if self.aux_factor_matrices is None or self.it_num == 1 or (not self._cache_components):
+            self.aux_factor_matrices = self.init_constraint(decomposition)
         
         if self.normalize_aux:
-            aux_fms = [aux_fm/np.linalg.norm(aux_fm, axis=0, keepdims=True) for aux_fm in aux_fms]
+            self.aux_factor_matrices = [aux_fm/np.linalg.norm(aux_fm, axis=0, keepdims=True) for aux_fm in self.aux_factor_matrices]
 
         # Init dual variables
         if self.dual_variables is None or self.it_num == 1 or (not self._cache_components):
-            dual_variables = self.init_duals(decomposition)
-        else:
-            dual_variables = self.dual_variables
+            self.dual_variables = self.init_duals(decomposition)
 
         if projected_X is None:
             projected_X = self.compute_projected_X(decomposition.projection_matrices, X, out=projected_X)
@@ -332,26 +328,23 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         # The decomposition is modified inplace each iteration
         for i in range(self.max_it):
             # TODO: Write that we update the blueprint twice in the report?
-            self.callback(X, decomposition, aux_fms, dual_variables, init=(i==0))
-            self.update_blueprint(X, decomposition, aux_fms, dual_variables, projected_X)
+            self.callback(X, decomposition, init=(i==0))
+            self.update_blueprint(projected_X, decomposition)
 
             if should_update_projections:
-                self.update_projections(X, decomposition, aux_fms, dual_variables)
+                self.update_projections(X, decomposition)
                 projected_X = self.compute_projected_X(decomposition.projection_matrices, X, out=projected_X)
 
-            self.update_blueprint(X, decomposition, aux_fms, dual_variables, projected_X)
+            self.update_blueprint(projected_X, decomposition)
 
-            old_aux_fms = aux_fms
-            aux_fms = self.compute_next_aux_fms(decomposition, dual_variables)
-            self.update_dual(decomposition, aux_fms, dual_variables)
+            self.aux_factor_matrices = self.compute_next_aux_factor_matrices(decomposition)
+            self.update_dual(decomposition)
 
-            if self.has_converged(decomposition, aux_fms, old_aux_fms, dual_variables):
+            if self.has_converged(decomposition):
                 break
         
         # TODO: oppdater state hele tiden, ikke kun på slutten.
-        self.callback(X, decomposition, aux_fms, dual_variables, init=False)
-        self.dual_variables = dual_variables
-        self.aux_fms = aux_fms
+        self.callback(X, decomposition, init=False)
         self.it_num += 1
 
     def prepare_for_update(self, decomposition):
@@ -401,19 +394,19 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         else:
             raise ValueError(f"Invalid dual init: {self.dual_init}")
 
-    def compute_next_aux_fms(self, decomposition, dual_variables):
+    def compute_next_aux_factor_matrices(self, decomposition):
         projections = decomposition.projection_matrices
         blueprint_B = decomposition.blueprint_B
         rank = blueprint_B.shape[1]
         return [
             self.constraint_prox(
-                P_k@blueprint_B + dual_variables[k], decomposition,
+                P_k@blueprint_B + self.dual_variables[k], decomposition,
             ) for k, P_k in enumerate(projections)
         ]
         # TODO: Kan vi gjøre dette under?
         Bks = [P_k@blueprint_B for P_k in projections]
         Bks = np.concatenate(Bks, axis=1)
-        dual_variables = np.concatenate([dual_variable for dual_variable in dual_variables], axis=1)
+        dual_variables = np.concatenate([dual_variable for dual_variable in self.dual_variables], axis=1)
 
         proxed = self.constraint_prox(Bks + dual_variables, decomposition)
         return [
@@ -437,13 +430,13 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         else:
             return x
 
-    def update_dual(self, decomposition, aux_fms, dual_variables):
+    def update_dual(self, decomposition):
         # TODO: Kommentarer
-        for P_k, aux_fm, dual_variable in zip(decomposition.projection_matrices, aux_fms, dual_variables):
+        for P_k, aux_fm, dual_variable in zip(decomposition.projection_matrices, self.aux_factor_matrices, self.dual_variables):
             B_k = P_k@decomposition.blueprint_B
             dual_variable += B_k - aux_fm
 
-    def update_projections(self, X, decomposition, aux_fms, dual_variable):
+    def update_projections(self, X, decomposition):
         # Triangle equation from notes
         A = decomposition.A
         blueprint_B = decomposition.blueprint_B
@@ -454,18 +447,19 @@ class Parafac2ADMM(BaseParafac2SubProblem):
             lhs = np.vstack((unreg_lhs, reg_lhs))
 
             unreg_rhs = X_k
-            reg_rhs = np.sqrt(self.rho/2)*(aux_fms[k] - dual_variable[k]).T
+            reg_rhs = np.sqrt(self.rho/2)*(self.aux_factor_matrices[k] - self.dual_variables[k]).T
             rhs = np.vstack((unreg_rhs, reg_rhs))
             
             decomposition.projection_matrices[k][:] = base.orthogonal_solve(lhs, rhs).T
 
-    def update_blueprint(self, X, decomposition, aux_fms, dual_variables, projected_X):
+    def update_blueprint(self, projected_X, decomposition):
         # Square equation from notes
+        # TODO: Remove this, it's in prepare_for_update
         if self._qr_cache is None:
             lhs = base.khatri_rao(
                 decomposition.A, decomposition.C,
             )
-            reg_lhs = np.vstack([np.identity(decomposition.rank) for _ in aux_fms])
+            reg_lhs = np.vstack([np.identity(decomposition.rank) for _ in self.aux_factor_matrices])
             reg_lhs *= np.sqrt(self.rho/2)
             lhs = np.vstack([lhs, reg_lhs])
             self._qr_cache = np.linalg.qr(lhs)
@@ -475,7 +469,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         projected_aux = [
             (aux_fm - dual_variable).T@projection
             for aux_fm, dual_variable, projection in zip(
-                aux_fms, dual_variables, decomposition.projection_matrices
+                self.aux_factor_matrices, self.dual_variables, decomposition.projection_matrices
             )
         ]
         reg_rhs = np.vstack(projected_aux)
@@ -489,22 +483,26 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     def compute_projected_X(self, projection_matrices, X, out=None):
         return compute_projected_X(projection_matrices, X, out=out)
 
-    def _compute_relative_coupling_error(self, fms, aux_fms):
-        gap_sq = sum(np.linalg.norm(fm - aux_fm)**2 for fm, aux_fm in zip(fms, aux_fms))
-        aux_norm_sq = sum(np.linalg.norm(aux_fm)**2 for aux_fm in aux_fms)
+    def _compute_relative_coupling_error(self, fms, aux_factor_matrices):
+        gap_sq = sum(np.linalg.norm(fm - aux_fm)**2 for fm, aux_fm in zip(fms, aux_factor_matrices))
+        aux_norm_sq = sum(np.linalg.norm(aux_fm)**2 for aux_fm in aux_factor_matrices)
         return gap_sq/aux_norm_sq
 
-    def has_converged(self, decomposition, aux_fms, old_aux_fms, dual_variables):
-        coupling_error = self._compute_relative_coupling_error(decomposition.B, aux_fms)
+    def has_converged(self, decomposition):
+        # TODO: change name so it is not the same as factor match score...
+        if self.prev_aux_factor_matrices is None:
+            self.prev_aux_factor_matrices = self.aux_factor_matrices
+            return False
+        coupling_error = self._compute_relative_coupling_error(decomposition.B, self.aux_factor_matrices)
         aux_change_sq = sum(
-            np.linalg.norm(aux_fm - old_aux_fm)**2 for aux_fm, old_aux_fm in zip(aux_fms, old_aux_fms)
+            np.linalg.norm(aux_fm - prev_aux_fm)**2 for aux_fm, prev_aux_fm in zip(self.aux_factor_matrices, self.prev_aux_factor_matrices)
         )
-        dual_var_norm_sq = sum(np.linalg.norm(dual_var)**2 for dual_var in dual_variables)
+        dual_var_norm_sq = sum(np.linalg.norm(dual_var)**2 for dual_var in self.dual_variables)
         aux_change_criterion = (aux_change_sq + 1e-16) / (dual_var_norm_sq + 1e-16)
         if self.verbose:
             print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
-
         
+        self.prev_aux_factor_matrices = self.aux_factor_matrices
         return coupling_error < self.tol and aux_change_criterion < self.tol
     
     def regulariser(self, factor_matrices):
@@ -531,27 +529,27 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     
     @property
     def checkpoint_params(self):
-        if self.aux_fms is not None:
-            aux_fms = {
-                f"aux_fm_{i:04d}": aux_fm for i, aux_fm in enumerate(self.aux_fms)
+        if self.aux_factor_matrices is not None:
+            aux_factor_matrices = {
+                f"aux_fm_{i:04d}": aux_fm for i, aux_fm in enumerate(self.aux_factor_matrices)
             }
             duals = {
                 f"dual_var_{i:04d}": dual_var for i, dual_var in enumerate(self.dual_variables)
             }
-            checkpoint_params = {**aux_fms, **duals}
+            checkpoint_params = {**aux_factor_matrices, **duals}
         else:
             checkpoint_params = {}
 
         return checkpoint_params
 
     def load_from_hdf5_group(self, group):
-        # TODO: This will crash if aux_fms and duals aren't stored, i.e. if we don't save aux_fms between iterations
+        # TODO: This will crash if aux_factor_matrices and duals aren't stored, i.e. if we don't save aux_factor_matrices between iterations
         aux_fm_names = [dataset_name for dataset_name in group if dataset_name.startswith("aux_fm_")]
         aux_fm_names.sort()
         dual_names = [dataset_name for dataset_name in group if dataset_name.startswith("dual_var_")]
         dual_names.sort()
 
-        self.aux_fms = [group[aux_fm_name][:] for aux_fm_name in aux_fm_names]
+        self.aux_factor_matrices = [group[aux_fm_name][:] for aux_fm_name in aux_fm_names]
         self.dual_var = [group[dual_name][:] for dual_name in dual_names]
 
 
@@ -686,7 +684,7 @@ class BlockParafac2(BaseDecomposer):
             if hasattr(self.sub_problems[1], "_compute_relative_coupling_error"):
                 rel_coupling = self.sub_problems[1]._compute_relative_coupling_error(
                     self.decomposition.B,
-                    self.sub_problems[1].aux_fms
+                    self.sub_problems[1].aux_factor_matrices
                 )
             else:
                 rel_coupling = 0

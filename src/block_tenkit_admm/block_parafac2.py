@@ -489,7 +489,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         return gap_sq/aux_norm_sq
 
     def has_converged(self, decomposition):
-        # TODO: change name so it is not the same as factor match score...
         if self.prev_aux_factor_matrices is None:
             self.prev_aux_factor_matrices = self.aux_factor_matrices
             return False

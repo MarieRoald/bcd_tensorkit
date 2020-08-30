@@ -322,7 +322,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         # The decomposition is modified inplace each iteration
         for i in range(self.max_it):
-            # TODO: Write that we update the blueprint twice in the report?
             self.callback(X, decomposition, init=(i==0))
             self.update_blueprint(projected_X, decomposition)
 
@@ -412,7 +411,8 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
     def constraint_prox(self, x, decomposition):
         # TODO: Comments
-        # TODO: Sjekk kompatiblitet med forskjellige proxes
+        # TODO: Check compatibility between different proxes
+        # The above todo is not necessary if we implement a separate prox-class.
         if self.non_negativity and self.l1_penalty:
             return np.maximum(x - 2*self.l1_penalty/self.rho, 0)
         elif self.tv_penalty:
@@ -464,8 +464,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         reg_rhs *= np.sqrt(self.rho/2)
         rhs = np.vstack([rhs, reg_rhs])
 
-        # TODO: Solve triangular?
-        decomposition.blueprint_B[:] = np.linalg.solve(R, Q.T@rhs).T
+        decomposition.blueprint_B[:] = sla.solve_triangular(R, Q.T@rhs, lower=False).T
 
     def compute_projected_X(self, projection_matrices, X, out=None):
         return compute_projected_X(projection_matrices, X, out=out)

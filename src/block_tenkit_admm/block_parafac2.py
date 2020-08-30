@@ -304,18 +304,12 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     def update_decomposition(
         self, X, decomposition, projected_X=None, should_update_projections=True
     ):
-        # Clear caches
-        self._qr_cache = None  # TODO: Is this only used for QR?
-        self._reg_solver = None
-
         # Normalising other modes must happen before auto rho computation
         if self.normalize_other_modes:
             decomposition.C[...] /= np.linalg.norm(decomposition.C, axis=0, keepdims=True)
             decomposition.A[...] /= np.linalg.norm(decomposition.A, axis=0, keepdims=True)
 
-        # Compute rho
-        if self.auto_rho:
-            self.rho, self._qr_cache = self.compute_auto_rho(decomposition)
+        self.prepare_for_update(decomposition)
 
         # Init constraint
         if self.aux_fms is None or self.it_num == 1 or (not self._cache_components):
@@ -366,17 +360,31 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.aux_fms = aux_fms
         self.it_num += 1
 
-    def compute_auto_rho(self, decomposition):  # TODO: Rename to include QR cache     
+    def prepare_for_update(self, decomposition):
+        # Compute LHS of matrix decomposition problem
         lhs = base.khatri_rao(
             decomposition.A, decomposition.C,
         )
-        rho = np.linalg.norm(lhs)**2/decomposition.rank
-
+        # Calculate rho if it is not supplied to __init__
+        if self.auto_rho:
+            self.rho = np.linalg.norm(lhs)**2/decomposition.rank
+        # Proximal term too keep update close to auxillary matrices
         reg_lhs = np.vstack([np.identity(decomposition.rank) for _ in decomposition.B])
-        reg_lhs *= np.sqrt(rho/2)
+        reg_lhs *= np.sqrt(self.rho/2)
+        # Combine to one system
         lhs = np.vstack([lhs, reg_lhs])
+        # Store QR factorisation for efficiency
+        self._qr_cache = np.linalg.qr(lhs)
 
-        return rho, np.linalg.qr(lhs)
+        # If l2 similarity is used, prepare solver instance
+        if self.l2_similarity is not None:
+            if sparse.issparse(self.l2_similarity):
+                I = sparse.eye(self.l2_similarity.shape[0])
+            else:
+                I = np.identity(self.l2_similarity.shape[0])
+            reg_matrix = self.l2_similarity + 0.5*self.rho*I
+
+            self._reg_solver = _SmartSymmetricSolver(reg_matrix, method=self.l2_solve_method)
 
     def init_constraint(self, decomposition):
         if self.aux_init == "same":
@@ -422,15 +430,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         elif self.l1_penalty:
             return np.sign(x)*np.maximum(np.abs(x) - 2*self.l1_penalty/self.rho, 0)
         elif self.l2_similarity is not None:
-            if self._reg_solver is None:
-                if sparse.issparse(self.l2_similarity):
-                    I = sparse.eye(self.l2_similarity.shape[0])
-                else:
-                    I = np.identity(self.l2_similarity.shape[0])
-                reg_matrix = self.l2_similarity + 0.5*self.rho*I
-
-                self._reg_solver = _SmartSymmetricSolver(reg_matrix, method=self.l2_solve_method)
-
             rhs = 0.5*self.rho*x
             return self._reg_solver.solve(rhs)
         else:

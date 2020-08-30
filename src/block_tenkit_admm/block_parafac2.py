@@ -529,21 +529,17 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     
     @property
     def checkpoint_params(self):
-        if self.aux_factor_matrices is not None:
-            aux_factor_matrices = {
-                f"aux_fm_{i:04d}": aux_fm for i, aux_fm in enumerate(self.aux_factor_matrices)
-            }
-            duals = {
-                f"dual_var_{i:04d}": dual_var for i, dual_var in enumerate(self.dual_variables)
-            }
-            checkpoint_params = {**aux_factor_matrices, **duals}
-        else:
-            checkpoint_params = {}
+        aux_factor_matrices = {
+            f"aux_fm_{i:04d}": aux_fm for i, aux_fm in enumerate(self.aux_factor_matrices)
+        }
+        duals = {
+            f"dual_var_{i:04d}": dual_var for i, dual_var in enumerate(self.dual_variables)
+        }
+        checkpoint_params = {**aux_factor_matrices, **duals}
 
         return checkpoint_params
 
     def load_from_hdf5_group(self, group):
-        # TODO: This will crash if aux_factor_matrices and duals aren't stored, i.e. if we don't save aux_factor_matrices between iterations
         aux_fm_names = [dataset_name for dataset_name in group if dataset_name.startswith("aux_fm_")]
         aux_fm_names.sort()
         dual_names = [dataset_name for dataset_name in group if dataset_name.startswith("dual_var_")]

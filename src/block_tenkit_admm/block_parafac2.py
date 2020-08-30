@@ -454,15 +454,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
     def update_blueprint(self, projected_X, decomposition):
         # Square equation from notes
-        # TODO: Remove this, it's in prepare_for_update
-        if self._qr_cache is None:
-            lhs = base.khatri_rao(
-                decomposition.A, decomposition.C,
-            )
-            reg_lhs = np.vstack([np.identity(decomposition.rank) for _ in self.aux_factor_matrices])
-            reg_lhs *= np.sqrt(self.rho/2)
-            lhs = np.vstack([lhs, reg_lhs])
-            self._qr_cache = np.linalg.qr(lhs)
         Q, R = self._qr_cache
         
         rhs = base.unfold(projected_X, 1).T
@@ -478,8 +469,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
 
         # TODO: Solve triangular?
         decomposition.blueprint_B[:] = np.linalg.solve(R, Q.T@rhs).T
-        #decomposition.blueprint_B[:] = prox_reg_lstsq(lhs, rhs, self.rho, reg_lhs, reg_rhs).T
-    
+
     def compute_projected_X(self, projection_matrices, X, out=None):
         return compute_projected_X(projection_matrices, X, out=out)
 

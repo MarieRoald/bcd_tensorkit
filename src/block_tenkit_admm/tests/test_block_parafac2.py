@@ -1,13 +1,12 @@
 import pytest
 from tenkit.decomposition import KruskalTensor, Parafac2Tensor
-from tenkit.decomposition import RLS, Parafac2RLS, BlockParafac2, ADMMSubproblem, Parafac2ADMM
+from tenkit.decomposition import RLS, Parafac2RLS, BlockParafac2, Parafac2ADMM
 from scipy.optimize import approx_fprime
 import numpy as np
 from tenkit.decomposition.cp import get_sse_lhs
 from tenkit.base import matrix_khatri_rao_product
 from tenkit import base
-
-
+import tenkit
 
 
 class BaseTestSubproblem():
@@ -166,6 +165,72 @@ class BaseTestParafac2Subproblem():
 
 class TestParafac2RLSSubproblem(BaseTestParafac2Subproblem):
     SubProblem = Parafac2RLS
+
+
+class BaseTestParafac2Subproblem():
+    SubProblem = None
+
+    @pytest.fixture
+    def random_rank4_parafac2_tensor(self):
+        return Parafac2Tensor.random_init(sizes=[30, 40, 50], rank=4)
+
+    def test_B_grad(self, random_rank4_parafac2_tensor):
+        X = random_rank4_parafac2_tensor.construct_tensor()
+        A = random_rank4_parafac2_tensor.A 
+        blueprint_B = random_rank4_parafac2_tensor.blueprint_B
+        C = random_rank4_parafac2_tensor.C
+
+        ktensor = KruskalTensor([A, blueprint_B, C])
+        projected_X = ktensor.construct_tensor()
+
+        wrong_decomposition = Parafac2Tensor.random_init(
+            sizes=random_rank4_parafac2_tensor.shape,
+            rank=random_rank4_parafac2_tensor.rank
+        )
+
+        
+        sub_problem = Parafac2RLS()
+        sub_problem.update_decomposition(
+            X, wrong_decomposition, projected_X, should_update_projections=False
+        )
+        new_B = wrong_decomposition.blueprint_B
+
+        def loss(x):
+            B = x.reshape(wrong_decomposition.blueprint_B.shape)
+            factor_matrices = [wrong_decomposition.A, B, wrong_decomposition.C]
+            estimated = np.einsum('ir, jr, kr -> ijk', *factor_matrices)
+            return np.linalg.norm(estimated - projected_X)**2
+
+        deriv = approx_fprime(new_B.ravel(), loss, epsilon=np.sqrt(np.finfo(float).eps))
+        assert np.allclose(deriv, 0, atol=1e-4, rtol=1e-4)
+
+    def test_projected_X(self, random_rank4_parafac2_tensor):
+        X = random_rank4_parafac2_tensor.construct_slices()
+        A = random_rank4_parafac2_tensor.A 
+        blueprint_B = random_rank4_parafac2_tensor.blueprint_B
+        C = random_rank4_parafac2_tensor.C
+
+        ktensor = KruskalTensor([A, blueprint_B, C])
+        projected_X = ktensor.construct_tensor()
+
+        wrong_decomposition = Parafac2Tensor.random_init(
+            sizes=random_rank4_parafac2_tensor.shape,
+            rank=random_rank4_parafac2_tensor.rank
+        )
+
+        sub_problem = Parafac2RLS()
+        sub_problem.update_decomposition(
+            X, wrong_decomposition, projected_X, should_update_projections=True
+        )
+
+        for projection in wrong_decomposition.projection_matrices:
+            assert np.allclose(projection.T@projection, np.identity(projection.shape[1]))
+
+    def test_update_status(self):
+        pass
+
+class TestParafac2RLSSubproblem(BaseTestParafac2Subproblem):
+    SubProblem = Parafac2RLS
     
 class TestParafac2ADMMSubproblem(BaseTestParafac2Subproblem):
     SubProblem = Parafac2ADMM
@@ -183,7 +248,7 @@ class TestParafac2ADMMSubproblem(BaseTestParafac2Subproblem):
         smooth_admm = self.SubProblem(l2_similarity=0*L, rho=rho,)
         B2 = np.array(
             [
-                smooth_admm.constraint_prox(Bk, random_rank4_parafac2_tensor, k) 
+                smooth_admm.constraint_prox(Bk, random_rank4_parafac2_tensor) 
                 for k, Bk in enumerate(B)
             ]
         )
@@ -195,59 +260,34 @@ class TestParafac2ADMMSubproblem(BaseTestParafac2Subproblem):
         deriv = approx_fprime(B2.ravel(), loss, 1e-10)
         assert np.linalg.norm(deriv, np.inf) < 1e-5
 
+
 class TestBlockParafac2:
     @pytest.fixture
     def random_rank4_parafac2_tensor(self):
-        return Parafac2Tensor.random_init(sizes=[30, 40, 50], rank=4)
+        return Parafac2Tensor.random_init(sizes=[30, 20, 30], rank=4)
 
-    @pytest.fixture
-    def random_nonnegative_rank4_ktensor(self):
-        return KruskalTensor.random_init([30, 40, 50], 4, random_method='uniform')
+    def test_parafac2_decomposition_rls(self, random_rank4_parafac2_tensor):
+        X = random_rank4_parafac2_tensor.construct_tensor()
+        self.check_parafac2_subproblem(X, Parafac2RLS(), max_its=1000)
     
+    def test_parafac2_decomposition_admm(self, random_rank4_parafac2_tensor):
+        X = random_rank4_parafac2_tensor.construct_tensor()
+        self.check_parafac2_subproblem(X, Parafac2ADMM(max_it=50), max_its=100, tol=1e-2)
 
-    def test_parafac2_decomposition(self, random_nonnegative_rank4_ktensor):
-        X = random_nonnegative_rank4_ktensor.construct_tensor()
+    
+    def check_parafac2_subproblem(self, target, subproblem, tol=1e-5, max_its=1000):
         pf2 = BlockParafac2(
             rank=4,
             sub_problems=[
                 RLS(mode=0),
-                Parafac2RLS(),
-                RLS(mode=2, non_negativity=False),
+                subproblem,
+                RLS(mode=2, non_negativity=True),
             ],
-            convergence_tol=1e-6
+            convergence_tol=1e-8,
+            max_its=max_its,
+            convergence_check_frequency=10
         )
-        pf2.fit(X)
+        pf2.fit(target)
 
-        assert pf2.explained_variance > (1-1e-3)
+        assert pf2.explained_variance > (1-tol)
 
-class TestADMMParafac2(TestBlockParafac2):
-    def test_parafac2_decomposition(self, random_nonnegative_rank4_ktensor):
-        X = random_nonnegative_rank4_ktensor.construct_tensor()
-        pf2 = BlockParafac2(
-            rank=4,
-            sub_problems=[
-                ADMMSubproblem(mode=0, rho=1),
-                Parafac2RLS(),
-                ADMMSubproblem(mode=2, non_negativity=False, rho=1),
-            ],
-            convergence_tol=1e-8
-        )
-        pf2.fit(X)
-
-        assert pf2.explained_variance > (1-1e-3)
-
-    def test_parafac2_decomposition_non_negative_A_and_C(self, random_nonnegative_rank4_ktensor):
-        X = random_nonnegative_rank4_ktensor.construct_tensor()
-        pf2 = BlockParafac2(
-            rank=4,
-            sub_problems=[
-                ADMMSubproblem(mode=0, non_negativity=True, rho=1),
-                Parafac2RLS(),
-                ADMMSubproblem(mode=2, non_negativity=True, rho=1),
-            ],
-            convergence_tol=1e-8
-        )
-        pf2.fit(X)
-
-        assert pf2.explained_variance > (1-1e-3)
-    pass

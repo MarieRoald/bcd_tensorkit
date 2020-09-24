@@ -129,6 +129,12 @@ class Parafac2RLS(BaseParafac2SubProblem):
 
     def _get_rightsolve(self):
         return RLS._get_rightsolve(self)
+    
+    def regulariser(self, factor):
+        if not self.ridge_penalty:
+            return 0
+        else:
+            return self.ridge_penalty*np.sum(factor.ravel()**2)
 
 
 class _SmartSymmetricPDSolver:
@@ -240,9 +246,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         l1_penalty=None,
         tv_penalty=None,
         verbose=False,
-        decay_num_it=False,
-        num_it_converge_at=30,
-        num_it_converge_to=5,
         cache_components=True,
         l2_solve_method=None,
 

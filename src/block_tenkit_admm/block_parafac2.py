@@ -682,7 +682,6 @@ class BlockParafac2(BaseDecomposer):
             # prev - prev*tol - curr < 0
             # (1 - tol)prev - curr < 0
             # (1 - tol)prev < curr
-            print((self.prev_sse - sse)/self.prev_sse)
             tol = (1 - self.convergence_tol)**self.convergence_check_frequency
             has_converged = (sse >= tol*self.prev_sse) and (reg >= tol*self.prev_reg)
             has_converged = has_converged and (rel_coupling >= tol*self.prev_rel_coupling)

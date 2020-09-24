@@ -47,6 +47,97 @@ class BaseSubProblem:
         pass
 
 
+class ADMM(BaseSubProblem):
+    def __init__(self, mode, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None):
+        self.tol = tol
+        self.ridge_penalty = ridge_penalty
+        self.non_negativity = non_negativity
+        self.mode = mode
+        self._matrix_khatri_rao_product_cache = None
+        self.initialised = False
+        self.aux_factor_matrix = None
+        self.dual_variables = None
+        self.cache = None
+        self.rho = rho
+        self.auto_rho = (rho is None)
+        self.max_its = max_its
+    
+    def initialise(self, decomposition):
+        shape = decomposition.factor_matrices[self.mode].shape
+        self.aux_factor_matrix = np.random.uniform(size=shape)
+        self.dual_variables = np.random.uniform(size=shape)
+        self.initialised = True
+
+
+    def update_decomposition(self, X, decomposition):
+        if not self.initialised:
+            self.initialise(decomposition)
+        self.cache = {}
+        self._recompute_normal_equation(X, decomposition)
+        self._set_rho(decomposition)
+        self._recompute_cholesky_cache(decomposition)
+
+        for i in range(self.max_its):
+            self._update_factor(decomposition)
+            self._update_aux_factor_matrix(decomposition)
+            self._update_duals(decomposition)
+
+            if self._has_converged(decomposition):
+                return
+    
+    def _recompute_normal_equation(self, X, decomposition):
+        self.cache["normal_eq_lhs"] = get_sse_lhs(decomposition.factor_matrices, self.mode)
+        self.cache["normal_eq_rhs"] = base.matrix_khatri_rao_product(X, decomposition.factor_matrices, self.mode)
+
+
+    def _set_rho(self, decomposition):
+        if not self.auto_rho:
+            return
+        else:
+            normal_eq_lhs = self.cache['normal_eq_rhs']
+            self.rho = np.trace(normal_eq_lhs)/decomposition.rank
+
+    def _recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        lhs = self.cache['normal_eq_lhs']
+        I = np.eye(decomposition.rank)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho)*I)
+
+    def _update_factor(self, decomposition):
+        rhs = self.cache['normal_eq_rhs']  # X{kk}
+        chol_lhs = self.cache['cholesky']  # L{kk}
+        rho = self.rho  # rho(kk)
+
+        prox_rhs = rhs + rho/2*(self.aux_factor_matrix - self.dual_variables)
+        decomposition.factor_matrices[self.mode][...]= sla.cho_solve(chol_lhs, prox_rhs.T).T
+
+    def _update_duals(self, decomposition):
+        self.previous_dual_variables = self.dual_variables
+        self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
+    
+    def _update_aux_factor_matrix(self, decomposition):
+        self.previous_factor_matrix = self.aux_factor_matrix
+
+        perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
+        if self.non_negativity:
+            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        else:
+            self.aux_factor_matrix = perturbed_factor
+        pass
+    
+    def _has_converged(self, decomposition):
+
+        factor_matrix = decomposition.factor_matrices[self.mode]
+        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
+        coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
+        
+        aux_change_sq = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        
+        dual_var_norm_sq = np.linalg.norm(self.dual_variables)**2
+        aux_change_criterion = (aux_change_sq + 1e-16) / (dual_var_norm_sq + 1e-16)
+        if self.verbose:
+            print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
+        return coupling_error < self.tol and aux_change_criterion < self.tol
 class NotUpdating(BaseSubProblem):
     def update_decomposition(self, X, decomposition):
         pass

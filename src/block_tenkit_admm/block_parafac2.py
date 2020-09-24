@@ -48,7 +48,7 @@ class BaseSubProblem:
 
 
 class ADMM(BaseSubProblem):
-    def __init__(self, mode, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None):
+    def __init__(self, mode, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
         self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
@@ -61,6 +61,7 @@ class ADMM(BaseSubProblem):
         self.rho = rho
         self.auto_rho = (rho is None)
         self.max_its = max_its
+        self.verbose = verbose
     
     def initialise(self, decomposition):
         shape = decomposition.factor_matrices[self.mode].shape
@@ -126,7 +127,6 @@ class ADMM(BaseSubProblem):
         pass
     
     def _has_converged(self, decomposition):
-
         factor_matrix = decomposition.factor_matrices[self.mode]
         coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
         coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
@@ -138,6 +138,8 @@ class ADMM(BaseSubProblem):
         if self.verbose:
             print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
         return coupling_error < self.tol and aux_change_criterion < self.tol
+
+
 class NotUpdating(BaseSubProblem):
     def update_decomposition(self, X, decomposition):
         pass

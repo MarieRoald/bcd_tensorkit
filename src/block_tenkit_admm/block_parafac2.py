@@ -95,7 +95,7 @@ class ADMM(BaseSubProblem):
         if not self.auto_rho:
             return
         else:
-            normal_eq_lhs = self.cache['normal_eq_rhs']
+            normal_eq_lhs = self.cache['normal_eq_lhs']
             self.rho = np.trace(normal_eq_lhs)/decomposition.rank
 
     def _recompute_cholesky_cache(self, decomposition):
@@ -138,6 +138,11 @@ class ADMM(BaseSubProblem):
         if self.verbose:
             print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
         return coupling_error < self.tol and aux_change_criterion < self.tol
+    
+    def get_coupling_errors(self, decomposition):
+        if self.aux_factor_matrix is None:
+            return [np.inf]
+        return [np.linalg.norm(decomposition.factor_matrices[self.mode] - self.aux_factor_matrix)**2]
 
 
 class NotUpdating(BaseSubProblem):
@@ -569,6 +574,12 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         gap_sq = sum(np.linalg.norm(fm - aux_fm)**2 for fm, aux_fm in zip(fms, aux_factor_matrices))
         aux_norm_sq = sum(np.linalg.norm(aux_fm)**2 for aux_fm in aux_factor_matrices)
         return gap_sq/aux_norm_sq
+         
+    def get_coupling_errors(self, decomposition):
+        if self.aux_factor_matrices is None:
+            return [np.inf]
+        gap_sq = sum(np.linalg.norm(fm - aux_fm)**2 for fm, aux_fm in zip(decomposition.B, self.aux_factor_matrices))
+        return [gap_sq]
 
     def has_converged(self, decomposition):
         if self.prev_aux_factor_matrices is None:
@@ -640,7 +651,8 @@ class BlockParafac2(BaseDecomposer):
         projection_update_frequency=5,
         convergence_check_frequency=1,
         normalize_B=False,
-        normalize_B_after_update=False
+        normalize_B_after_update=False,
+        absolute_tolerance=1e-16
     ):
         # Make sure that the second mode solves for evolving components
         if (
@@ -667,6 +679,7 @@ class BlockParafac2(BaseDecomposer):
         self.convergence_check_frequency = convergence_check_frequency
         self.normalize_B = normalize_B
         self.normalize_B_after_update = normalize_B_after_update
+        self.absolute_tolerance = absolute_tolerance
 
     def _check_valid_components(self, decomposition):
         return BaseParafac2._check_valid_components(self, decomposition)
@@ -726,7 +739,7 @@ class BlockParafac2(BaseDecomposer):
                 rel_change = self._rel_function_change
 
                 print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-                      f'improvement is {rel_change:g}')
+                      f'improvement is {rel_change:g}, {self.coupling_errors}')
 
         if (
             ((self.current_iteration) % self.checkpoint_frequency != 0) and 
@@ -743,6 +756,7 @@ class BlockParafac2(BaseDecomposer):
             BaseParafac2.init_components(self, initial_decomposition=initial_decomposition)
 
     def _has_converged(self):
+        """
         has_converged = False
 
         should_check_convergence = self.current_iteration % self.convergence_check_frequency == 0
@@ -785,6 +799,31 @@ class BlockParafac2(BaseDecomposer):
             self.prev_rel_coupling = rel_coupling
 
         return has_converged
+        """
+        if self.current_iteration == 0:
+            return False
+        coupling_errors = self.coupling_errors
+
+        loss = self.loss
+        self._rel_function_change = abs(self.prev_loss - self.loss) / self.prev_loss
+        self.prev_loss = loss
+
+        for coupling_error, prev_coupling_error in zip(coupling_errors, self.prev_coupling_errors):
+            coupling_change = abs(prev_coupling_error - coupling_error)
+            relative_coupling_change = coupling_change/prev_coupling_error
+            if coupling_error > self.absolute_tolerance or relative_coupling_change > self.convergence_tol:
+                return False
+        self.prev_coupling_errors = coupling_errors
+        
+        return loss < self.absolute_tolerance or self._rel_function_change < self.convergence_tol
+
+    @property
+    def coupling_errors(self):
+        coupling_errors = []
+        for sub_problem in self.sub_problems:
+            if hasattr(sub_problem, 'get_coupling_errors'):
+                coupling_errors += sub_problem.get_coupling_errors(self.decomposition)
+        return coupling_errors
 
     def _init_fit(self, X, max_its, initial_decomposition):
         super()._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition)
@@ -797,6 +836,7 @@ class BlockParafac2(BaseDecomposer):
         self.prev_reg = self.regularisation_penalty
         self.prev_rel_coupling = None
         self._rel_function_change = np.inf
+        self.prev_coupling_errors = self.coupling_errors
     
     def init_random(self):
         return BaseParafac2.init_random(self)

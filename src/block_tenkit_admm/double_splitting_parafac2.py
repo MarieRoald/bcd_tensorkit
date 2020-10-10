@@ -109,8 +109,8 @@ class Mode0ADMM(BaseSubProblem):
         return 0
 
     def get_coupling_errors(self, decomposition):
-        return [np.linalg.norm(decomposition.A - self.aux_factor_matrix)**2]
-
+        A = decomposition.A
+        return [np.linalg.norm(A - self.aux_factor_matrix)/np.linalg.norm(A)]
     
     def _recompute_normal_equation(self, decomposition):
         self.cache["normal_eq_lhs"] = 0
@@ -224,13 +224,6 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = np.random.uniform(0, 1, size=(K, rank))
         auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
         auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
-        
-    def update_decomposition(self, decomposition, auxiliary_variables):
-        rightsolve = self._get_rightsolve()
-        for k, (c_row, factor_matrix) in enumerate(zip(decomposition.C,  decomposition.B)):
-            X_k_vec = self.X[k].reshape(-1, 1)
-            lhs = base.khatri_rao(decomposition.A, factor_matrix)
-            c_row[...] = rightsolve(lhs.T, X_k_vec.T.ravel())
 
     def update_decomposition(self, decomposition, auxiliary_variables):
         self.cache = {}
@@ -250,9 +243,9 @@ class Mode2ADMM(BaseSubProblem):
         return 0
 
     def get_coupling_errors(self, decomposition):
-        return [np.linalg.norm(decomposition.C - self.aux_factor_matrix)**2]
+        C = decomposition.C
+        return [np.linalg.norm(C - self.aux_factor_matrix)/np.linalg.norm(C)]
 
-    
     def _recompute_normal_equation(self, decomposition):
         A = decomposition.A
         B = decomposition.B
@@ -347,7 +340,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self.l2_solve_method = l2_solve_method
 
-        self._cache = {}        
+        self._cache = {}
 
 
     def init_subproblem(self, mode, auxiliary_variables, rank, X):
@@ -370,6 +363,8 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
         auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
+
+        
 
     def update_decomposition(
         self, decomposition, auxiliary_variables
@@ -541,8 +536,8 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         for k in range(K):
             pf2_Bk = self.projection_matrices[k]@self.blueprint_B
             
-            pf2_coupling_error += np.linalg.norm(pf2_Bk - decomposition.B[k])**2
-            reg_coupling_error += np.linalg.norm(self.reg_Bks[k] - decomposition.B[k])**2
+            pf2_coupling_error += np.linalg.norm(pf2_Bk - decomposition.B[k])/np.linalg.norm(decomposition.B[k])
+            reg_coupling_error += np.linalg.norm(self.reg_Bks[k] - decomposition.B[k])/np.linalg.norm(decomposition.B[k])
 
         return reg_coupling_error, pf2_coupling_error
 
@@ -592,6 +587,9 @@ class BlockEvolvingTensor(BaseDecomposer):
         return self.SSE + self.regularisation_penalty
 
     def _fit(self):
+        if self.checkpoint_frequency > 0:
+            self.store_checkpoint()
+            
         for it in range(self.max_its - self.current_iteration):
             if self._has_converged():
                 break
@@ -613,7 +611,11 @@ class BlockEvolvingTensor(BaseDecomposer):
         
     def _update_evolving_tensors_factors(self):
         # The function below updates the decomposition and the projected X inplace.
-        # l = self.loss
+        # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
+        #               f'improvement is {self._rel_function_change:g}')
+        self.sub_problems[1].update_decomposition(
+            self.decomposition, self.auxiliary_variables,
+        )
 
         # print(f'Before {self.current_iteration:6d}A: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
@@ -621,16 +623,9 @@ class BlockEvolvingTensor(BaseDecomposer):
             self.decomposition, self.auxiliary_variables,
         )
 
-
         # print(f'Before {self.current_iteration:6d}C: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
         self.sub_problems[2].update_decomposition(
-            self.decomposition, self.auxiliary_variables,
-        )
-
-        # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-        #               f'improvement is {self._rel_function_change:g}')
-        self.sub_problems[1].update_decomposition(
             self.decomposition, self.auxiliary_variables,
         )
 
@@ -688,6 +683,13 @@ class BlockEvolvingTensor(BaseDecomposer):
         self.num_X_elements = sum([np.prod(s) for s in self.X_shape])
 
     @property
+    def loss(self):
+        loss = 0
+        for Xk, Xk_hat in zip(self.X, self.reconstructed_X):
+            loss += (np.linalg.norm(Xk - Xk_hat)/np.linalg.norm(Xk))**2
+        return loss
+
+    @property
     def SSE(self):
         return utils.slice_SSE(self.X, self.reconstructed_X)
 
@@ -697,8 +699,9 @@ class BlockEvolvingTensor(BaseDecomposer):
 
     def checkpoint_callback(self):
         extra_params = {}
-        for sub_problem in self.sub_problems:
-            extra_params = {**extra_params, **sub_problem.checkpoint_params}
+        for i, auxiliary_vars in enumerate(self.auxiliary_variables):
+            auxiliary_vars = {f"mode_{i}_{key}": value for key, value in auxiliary_vars.items()}
+            extra_params = {**extra_params, **auxiliary_vars}
         
         return extra_params
     
@@ -742,6 +745,7 @@ class BlockEvolvingTensor(BaseDecomposer):
                 else:
                     raise ValueError("No valid decomposition")
 
+
     def _has_converged(self):
         if self.current_iteration == 0:
             return False
@@ -758,3 +762,7 @@ class BlockEvolvingTensor(BaseDecomposer):
         self.prev_coupling_errors = coupling_errors
         
         return loss < self.absolute_tolerance or self._rel_function_change < self.convergence_tol
+
+    @property
+    def coupling_error(self):
+        return sum(self.coupling_errors)

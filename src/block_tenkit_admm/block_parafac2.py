@@ -46,6 +46,9 @@ class BaseSubProblem:
     def load_from_hdf5_group(self, group):
         pass
 
+    def get_coupling_errors(self):
+        return []
+
 
 class ADMM(BaseSubProblem):
     def __init__(self, mode, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
@@ -142,7 +145,8 @@ class ADMM(BaseSubProblem):
     def get_coupling_errors(self, decomposition):
         if self.aux_factor_matrix is None:
             return [np.inf]
-        return [np.linalg.norm(decomposition.factor_matrices[self.mode] - self.aux_factor_matrix)**2]
+        fm = decomposition.factor_matrices[self.mode]
+        return [(np.linalg.norm(fm - self.aux_factor_matrix)/np.linalg.norm(fm))**2]
 
 
 class NotUpdating(BaseSubProblem):
@@ -174,6 +178,111 @@ class RLS(BaseSubProblem):
         if self.ridge_penalty:
             rightsolve = base.add_rightsolve_ridge(rightsolve, self.ridge_penalty)
         return rightsolve
+
+
+
+class Mode2ADMM(BaseSubProblem):
+    def __init__(self, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+        self.tol = tol
+        self.non_negativity = non_negativity
+        self.max_its = max_its
+        self.rho = rho 
+        self.auto_rho = (rho is None)
+        self.verbose = verbose
+        self.aux_factor_matrix = None
+        self.dual_variables = None
+        self.X = None
+        self.mode = 2
+        
+    def update_decomposition(self, X, decomposition):
+        K = X.shape[-1]
+        if self.aux_factor_matrix is None:
+            self.aux_factor_matrix = np.random.uniform(0, 1, size=(K, decomposition.rank))
+            self.dual_variables = np.random.uniform(0, 1, size=(K, decomposition.rank))
+
+        self.X = [X[:, :, k] for k in range(K)]
+        self.unfolded_X = np.concatenate([X[:, :, k] for k in range(K)], axis=1)
+
+        self.cache = {}
+        self._recompute_normal_equation(decomposition)
+        self._set_rho(decomposition)
+        self._recompute_cholesky_cache(decomposition)
+
+        for i in range(self.max_its):
+            self._update_factor(decomposition)
+            self._update_aux_factor_matrix(decomposition)
+            self._update_duals(decomposition)
+
+            if self._has_converged(decomposition):
+                return
+    
+    def regulariser(self, decomposition):
+        return 0
+
+    def get_coupling_errors(self, decomposition):
+        if self.aux_factor_matrix is None:
+            return [np.inf]
+        return [(np.linalg.norm(decomposition.C - self.aux_factor_matrix)/np.linalg.norm(decomposition.C))**2]
+
+    
+    def _recompute_normal_equation(self, decomposition):
+        A = decomposition.factor_matrices[0]
+        B = decomposition.factor_matrices[1]
+        K = len(self.X)
+        self.cache["normal_eq_lhs"] = (A.T@A)*(B.T@B)
+        self.cache["normal_eq_rhs"] = [np.diag(A.T@self.X[k]@B) for k in range(K)]
+
+    def _set_rho(self, decomposition):
+        if not self.auto_rho:
+            return
+        else:
+            lhs = self.cache['normal_eq_lhs']
+            self.rho = np.trace(lhs)/decomposition.rank
+
+    def _recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        I = np.eye(decomposition.rank)
+        rho = self.rho
+        lhs = self.cache['normal_eq_lhs']
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*rho)*I)
+
+    def _update_factor(self, decomposition):
+        rhs = self.cache['normal_eq_rhs']  # X{kk}
+        chol_lhs = self.cache['cholesky']  # L{kk}
+        rho = self.rho  # rho(kk)
+
+        K = len(rhs)
+        for k in range(K):
+            prox_rhs = rhs[k] + rho/2*(self.aux_factor_matrix[k] - self.dual_variables[k])
+            decomposition.factor_matrices[self.mode][k] = sla.cho_solve(chol_lhs, prox_rhs.T).T
+
+    def _update_duals(self, decomposition):
+        self.previous_dual_variables = self.dual_variables
+        self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
+    
+    def _update_aux_factor_matrix(self, decomposition):
+        self.previous_factor_matrix = self.aux_factor_matrix
+
+        perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
+        if self.non_negativity:
+            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        else:
+            self.aux_factor_matrix = perturbed_factor
+        pass
+    
+    def _has_converged(self, decomposition):
+        factor_matrix = decomposition.factor_matrices[self.mode]
+        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
+        coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
+        
+        aux_change_sq = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        
+        dual_var_norm_sq = np.linalg.norm(self.dual_variables)**2
+        aux_change_criterion = (aux_change_sq + 1e-16) / (dual_var_norm_sq + 1e-16)
+        if self.verbose:
+            print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
+        return coupling_error < self.tol and aux_change_criterion < self.tol
+
 
 
 class BaseParafac2SubProblem(BaseSubProblem):
@@ -344,7 +453,6 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         l1_penalty=None,
         tv_penalty=None,
         verbose=False,
-        cache_components=True,
         l2_solve_method=None,
 
         normalize_aux=False,
@@ -386,8 +494,9 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.aux_init = aux_init
         self.dual_init = dual_init
 
-        self._cache_components = cache_components
         self._callback = noop
+        self.aux_factor_matrices = None
+        self.dual_variables = None
 
     def callback(self, X, decomposition, init=False):
         """Calls self._callback, which should have the following signature:
@@ -408,14 +517,14 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         self.prepare_for_update(decomposition)
 
         # Init constraint
-        if self.aux_factor_matrices is None or self.it_num == 1 or (not self._cache_components):
+        if self.aux_factor_matrices is None:
             self.aux_factor_matrices = self.init_constraint(decomposition)
         
         if self.normalize_aux:
             self.aux_factor_matrices = [aux_fm/np.linalg.norm(aux_fm, axis=0, keepdims=True) for aux_fm in self.aux_factor_matrices]
 
         # Init dual variables
-        if self.dual_variables is None or self.it_num == 1 or (not self._cache_components):
+        if self.dual_variables is None:
             self.dual_variables = self.init_duals(decomposition)
 
         if projected_X is None:
@@ -578,7 +687,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     def get_coupling_errors(self, decomposition):
         if self.aux_factor_matrices is None:
             return [np.inf]
-        gap_sq = sum(np.linalg.norm(fm - aux_fm)**2 for fm, aux_fm in zip(decomposition.B, self.aux_factor_matrices))
+        gap_sq = sum((np.linalg.norm(fm - aux_fm)/np.linalg.norm(fm))**2 for fm, aux_fm in zip(decomposition.B, self.aux_factor_matrices))
         return [gap_sq]
 
     def has_converged(self, decomposition):
@@ -695,7 +804,10 @@ class BlockParafac2(BaseDecomposer):
 
     @property
     def loss(self):
-        return self.SSE + self.regularisation_penalty
+        rel_sse = 0
+        for Xk, Xk_hat in zip(self.X, self.reconstructed_X):
+            rel_sse += (np.linalg.norm(Xk - Xk_hat)/np.linalg.norm(Xk))**2
+        return rel_sse + self.regularisation_penalty
 
     def _update_parafac2_factors(self):
         should_update_projections = self.current_iteration % self.projection_update_frequency == 0
@@ -740,7 +852,6 @@ class BlockParafac2(BaseDecomposer):
 
                 print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
                       f'improvement is {rel_change:g}, {self.coupling_errors}')
-
         if (
             ((self.current_iteration) % self.checkpoint_frequency != 0) and 
             (self.checkpoint_frequency > 0)
@@ -810,7 +921,7 @@ class BlockParafac2(BaseDecomposer):
 
         for coupling_error, prev_coupling_error in zip(coupling_errors, self.prev_coupling_errors):
             coupling_change = abs(prev_coupling_error - coupling_error)
-            relative_coupling_change = coupling_change/prev_coupling_error
+            relative_coupling_change = coupling_change/(prev_coupling_error + 1e-16)
             if coupling_error > self.absolute_tolerance or relative_coupling_change > self.convergence_tol:
                 return False
         self.prev_coupling_errors = coupling_errors
@@ -824,6 +935,10 @@ class BlockParafac2(BaseDecomposer):
             if hasattr(sub_problem, 'get_coupling_errors'):
                 coupling_errors += sub_problem.get_coupling_errors(self.decomposition)
         return coupling_errors
+    
+    @property
+    def coupling_error(self):
+        return sum(self.coupling_errors)
 
     def _init_fit(self, X, max_its, initial_decomposition):
         super()._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition)

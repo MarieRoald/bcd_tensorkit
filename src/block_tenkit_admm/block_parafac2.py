@@ -72,7 +72,6 @@ class ADMM(BaseSubProblem):
         self.dual_variables = np.random.uniform(size=shape)
         self.initialised = True
 
-
     def update_decomposition(self, X, decomposition):
         if not self.initialised:
             self.initialise(decomposition)
@@ -92,7 +91,6 @@ class ADMM(BaseSubProblem):
     def _recompute_normal_equation(self, X, decomposition):
         self.cache["normal_eq_lhs"] = get_sse_lhs(decomposition.factor_matrices, self.mode)
         self.cache["normal_eq_rhs"] = base.matrix_khatri_rao_product(X, decomposition.factor_matrices, self.mode)
-
 
     def _set_rho(self, decomposition):
         if not self.auto_rho:
@@ -120,11 +118,22 @@ class ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
+        if self.non_negativity and self.ridge_penalty:
+            raise NotImplementedError
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+            # Differentiate wrt X:
+            # rX + rho (X - Y) = 0
+            # rX + rho X = rho Y
+            # (r + rho) X = rho Y
+            # X = (rho / (r + rho)) Y
+            self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -146,7 +155,13 @@ class ADMM(BaseSubProblem):
         if self.aux_factor_matrix is None:
             return [np.inf]
         fm = decomposition.factor_matrices[self.mode]
-        return [(np.linalg.norm(fm - self.aux_factor_matrix)/np.linalg.norm(fm))**2]
+        return [(np.linalg.norm(fm - self.aux_factor_matrix)/np.linalg.norm(fm))]
+    
+    def regulariser(self, factor_matrix):
+        regulariser = 0
+        if self.ridge_penalty:
+            regulariser += self.ridge_penalty*np.sum(factor_matrix**2)
+        return regulariser
 
 
 class NotUpdating(BaseSubProblem):
@@ -182,8 +197,9 @@ class RLS(BaseSubProblem):
 
 
 class Mode2ADMM(BaseSubProblem):
-    def __init__(self, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=None, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
+        self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
         self.max_its = max_its
         self.rho = rho 
@@ -216,13 +232,15 @@ class Mode2ADMM(BaseSubProblem):
             if self._has_converged(decomposition):
                 return
     
-    def regulariser(self, decomposition):
+    def regulariser(self, factor_matrix):
+        if self.ridge_penalty:
+            return self.ridge_penalty*np.sum(factor_matrix**2)
         return 0
 
     def get_coupling_errors(self, decomposition):
         if self.aux_factor_matrix is None:
             return [np.inf]
-        return [(np.linalg.norm(decomposition.C - self.aux_factor_matrix)/np.linalg.norm(decomposition.C))**2]
+        return [(np.linalg.norm(decomposition.C - self.aux_factor_matrix)/np.linalg.norm(decomposition.C))]
 
     
     def _recompute_normal_equation(self, decomposition):
@@ -261,11 +279,23 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
+        if self.non_negativity and self.ridge_penalty:
+            raise NotImplementedError
+
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+            # Differentiate wrt X:
+            # rX + rho (X - Y) = 0
+            # rX + rho X = rho Y
+            # (r + rho) X = rho Y
+            # X = (rho / (r + rho)) Y
+            self.aux_factor_matrix = self.rho * perturbed_factor / (self.ridge_penalty + self.rho)
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -687,7 +717,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
     def get_coupling_errors(self, decomposition):
         if self.aux_factor_matrices is None:
             return [np.inf]
-        gap_sq = sum((np.linalg.norm(fm - aux_fm)/np.linalg.norm(fm))**2 for fm, aux_fm in zip(decomposition.B, self.aux_factor_matrices))
+        gap_sq = sum((np.linalg.norm(fm - aux_fm)/np.linalg.norm(fm)) for fm, aux_fm in zip(decomposition.B, self.aux_factor_matrices))
         return [gap_sq]
 
     def has_converged(self, decomposition):

@@ -3,6 +3,7 @@ import tenkit
 from tenkit.decomposition import BaseDecomposer
 from pathlib import Path
 import numpy as np
+from scipy import sparse
 import scipy.linalg as sla
 from tenkit import base
 import h5py
@@ -10,6 +11,8 @@ from warnings import warn
 from tenkit import utils
 
 from tenkit.decomposition.cp import get_sse_lhs
+from ._smoothness import _SmartSymmetricPDSolver
+
 
 class BaseSubProblem(ABC):
     def __init__(self):
@@ -71,9 +74,10 @@ class Mode0RLS(BaseSubProblem):
 
 
 class Mode0ADMM(BaseSubProblem):
-    def __init__(self, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
         self.non_negativity = non_negativity
+        self.ridge_penalty = ridge_penalty
         self.max_its = max_its
         self.rho = rho 
         self.auto_rho = (rho is None)
@@ -106,7 +110,10 @@ class Mode0ADMM(BaseSubProblem):
                 return
     
     def regulariser(self, decomposition):
-        return 0
+        regulariser = 0
+        if self.ridge_penalty:
+            regulariser += self.ridge_penalty*np.sum(decomposition.A**2)
+        return regulariser
 
     def get_coupling_errors(self, decomposition):
         A = decomposition.A
@@ -146,11 +153,22 @@ class Mode0ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
+        if self.non_negativity and self.ridge_penalty:
+            raise NotImplementedError
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+            # Differentiate wrt X:
+            # rX + rho (X - Y) = 0
+            # rX + rho X = rho Y
+            # (r + rho) X = rho Y
+            # X = (rho / (r + rho)) Y
+            self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -198,15 +216,16 @@ class Mode2RLS(BaseSubProblem):
     def regulariser(self, decomposition):
         if not self.ridge_penalty:
             return 0
-        return self.ridge_penalty*np.sum(decomposition.B**2)
+        return self.ridge_penalty*np.sum(decomposition.C**2)
 
     def get_coupling_errors(self, decomposition):
         return []
 
 
 class Mode2ADMM(BaseSubProblem):
-    def __init__(self, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
+        self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
         self.max_its = max_its
         self.rho = rho 
@@ -240,7 +259,10 @@ class Mode2ADMM(BaseSubProblem):
                 return
     
     def regulariser(self, decomposition):
-        return 0
+        regulariser = 0
+        if self.ridge_penalty:
+            regulariser += self.ridge_penalty*np.sum(decomposition.C**2)
+        return regulariser
 
     def get_coupling_errors(self, decomposition):
         C = decomposition.C
@@ -281,11 +303,24 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
+        if self.non_negativity and self.ridge_penalty:
+            raise NotImplementedError
+
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+            # Differentiate wrt X:
+            # rX + rho (X - Y) = 0
+            # rX + rho X = rho Y
+            # (r + rho) X = rho Y
+            # X = (rho / (r + rho)) Y
+            for k, _ in enumerate(perturbed_factor):
+                self.aux_factor_matrix[k] = (self.rho[k] / (self.ridge_penalty + self.rho[k])) * perturbed_factor[k]
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -314,6 +349,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
     def __init__(
         self,
         rho=None,
+        auto_rho_scaling=1,
         tol=1e-3,
         max_it=5,
 
@@ -328,6 +364,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             self.auto_rho = True
         else:
             self.auto_rho = False
+        self.auto_rho_scaling = auto_rho_scaling
 
         self.rho = rho
         self.tol = tol
@@ -354,7 +391,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self.blueprint_B = np.random.uniform(size=(rank, rank))
         self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(K)]
-        self.reg_Bks = [self.prox(np.random.uniform(size=(X[k].shape[1], rank)), k) for k in range(K)]
+        self.reg_Bks = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
         self.dual_variables_reg = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
         self.dual_variables_pf2 = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
 
@@ -365,6 +402,20 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
 
         
+    def update_smoothness_proxes(self):
+        if self.l2_similarity is None:
+            return
+
+        if sparse.issparse(self.l2_similarity):
+            I = sparse.eye(self.l2_similarity.shape[0])
+        else:
+            I = np.identity(self.l2_similarity.shape[0])
+        reg_matrices = [self.l2_similarity + 0.5*rho*I for rho in self._cache['rho']]
+
+        self._cache['l2_reg_solvers'] = [
+            _SmartSymmetricPDSolver(reg_matrix, method=self.l2_solve_method)
+            for reg_matrix in reg_matrices
+        ]
 
     def update_decomposition(
         self, decomposition, auxiliary_variables
@@ -373,6 +424,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.recompute_normal_equation(decomposition)
         self.set_rhos(decomposition)
         self.recompute_cholesky_cache(decomposition)
+        self.update_smoothness_proxes()
         # breakpoint()
         # The decomposition is modified inplace each iteration
         for i in range(self.max_it):
@@ -417,7 +469,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             self._cache['rho'] = [self.rho for _ in decomposition.B]
         else:
             normal_eq_lhs = self._cache['normal_eq_lhs']
-            self._cache['rho'] = [np.trace(lhs)/decomposition.rank for lhs in normal_eq_lhs]
+            self._cache['rho'] = [self.auto_rho_scaling*np.trace(lhs)/decomposition.rank for lhs in normal_eq_lhs]
 
     def recompute_cholesky_cache(self, decomposition):
         # Prepare to compute choleskys
@@ -481,9 +533,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         elif self.l1_penalty:
             return np.sign(factor_matrix)*np.maximum(np.abs(factor_matrix) - 2*self.l1_penalty/rho, 0)
         elif self.l2_similarity is not None:
-            raise NotImplementedError
-            #rhs = 0.5*rho*factor_matrix
-            #return self._reg_solver.solve(rhs)
+            # Solve (2L + rho I)x = y -> (L + 0.5*rho I)x = 0.5*rho*y
+            reg_solver = self._cache['l2_reg_solvers'][k]
+            rhs = 0.5*rho*factor_matrix
+            return reg_solver.solve(rhs)
         else:
             return factor_matrix
     
@@ -541,6 +594,16 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         return reg_coupling_error, pf2_coupling_error
 
+    def regulariser(self, decomposition):
+        regulariser = 0
+        if self.l2_similarity is not None:
+            B = decomposition.B
+            W = self.l2_similarity
+            rank = decomposition.rank
+            K = decomposition.C.shape[0]
+            regulariser += sum(np.trace(B[k].T@W@B[k]) for k in range(K) for r in range(rank))
+
+        return regulariser
 
 class BlockEvolvingTensor(BaseDecomposer):
     DecompositionType = tenkit.decomposition.EvolvingTensor
@@ -580,7 +643,7 @@ class BlockEvolvingTensor(BaseDecomposer):
             np.array(self.decomposition.B),
             self.decomposition.C
         ]
-        return sum(sp.regulariser(fm) for sp, fm in zip(self.sub_problems, factor_matrices))
+        return sum(sp.regulariser(self.decomposition) for sp in self.sub_problems)
 
     @property
     def loss(self):

@@ -286,7 +286,7 @@ class Mode2ADMM(BaseSubProblem):
     def _recompute_cholesky_cache(self, decomposition):
         # Prepare to compute choleskys
         I = np.eye(decomposition.rank)
-        self.cache['cholesky'] = [sla.cho_factor(lhs + (0.5*rho)*I) for rho,lhs in zip(self.rho, self.cache['normal_eq_lhs'])]
+        self.cache['cholesky'] = [sla.cho_factor(lhs + (0.5*rho + self.ridge_penalty)*I) for rho,lhs in zip(self.rho, self.cache['normal_eq_lhs'])]
 
     def _update_factor(self, decomposition):
         rhs = self.cache['normal_eq_rhs']  # X{kk}
@@ -303,24 +303,22 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
-        if self.non_negativity and self.ridge_penalty:
-            raise NotImplementedError
-
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
-        elif self.ridge_penalty:
-            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
-            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
-            # Differentiate wrt X:
-            # rX + rho (X - Y) = 0
-            # rX + rho X = rho Y
-            # (r + rho) X = rho Y
-            # X = (rho / (r + rho)) Y
-            for k, _ in enumerate(perturbed_factor):
-                self.aux_factor_matrix[k] = (self.rho[k] / (self.ridge_penalty + self.rho[k])) * perturbed_factor[k]
+        # Ridge is not incorporated in the aux factor matrix
+        #elif self.ridge_penalty:
+        #    # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+        #    # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+        #    # Differentiate wrt X:
+        #    # rX + rho (X - Y) = 0
+        #    # rX + rho X = rho Y
+        #    # (r + rho) X = rho Y
+        #    # X = (rho / (r + rho)) Y
+        #    for k, _ in enumerate(perturbed_factor):
+        #        self.aux_factor_matrix[k] = (self.rho[k] / (self.ridge_penalty + self.rho[k])) * perturbed_factor[k]
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -379,7 +377,6 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self._cache = {}
 
-
     def init_subproblem(self, mode, auxiliary_variables, rank, X):
         assert mode == 1
 
@@ -401,7 +398,6 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
 
-        
     def update_smoothness_proxes(self):
         if self.l2_similarity is None:
             return
@@ -505,7 +501,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             
             U, s, Vh = np.linalg.svd((Bk + dual_variable_pf2_k)@blueprint_B.T, full_matrices=False)
             self.projection_matrices[k] = U@Vh
-    
+
     def update_blueprint(self, decomposition):
         self.previous_blueprint_B = self.blueprint_B
         K = decomposition.C.shape[0]
@@ -604,6 +600,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             regulariser += sum(np.trace(B[k].T@W@B[k]) for k in range(K) for r in range(rank))
 
         return regulariser
+
 
 class BlockEvolvingTensor(BaseDecomposer):
     DecompositionType = tenkit.decomposition.EvolvingTensor
@@ -807,7 +804,6 @@ class BlockEvolvingTensor(BaseDecomposer):
                         break
                 else:
                     raise ValueError("No valid decomposition")
-
 
     def _has_converged(self):
         if self.current_iteration == 0:

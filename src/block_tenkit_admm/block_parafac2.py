@@ -197,7 +197,7 @@ class RLS(BaseSubProblem):
 
 
 class Mode2ADMM(BaseSubProblem):
-    def __init__(self, ridge_penalty=None, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
         self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
@@ -262,7 +262,7 @@ class Mode2ADMM(BaseSubProblem):
         I = np.eye(decomposition.rank)
         rho = self.rho
         lhs = self.cache['normal_eq_lhs']
-        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*rho)*I)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*rho + self.ridge_penalty)*I)
 
     def _update_factor(self, decomposition):
         rhs = self.cache['normal_eq_rhs']  # X{kk}
@@ -279,23 +279,20 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
-        if self.non_negativity and self.ridge_penalty:
-            raise NotImplementedError
-
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
-        elif self.ridge_penalty:
-            # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
-            # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
-            # Differentiate wrt X:
-            # rX + rho (X - Y) = 0
-            # rX + rho X = rho Y
-            # (r + rho) X = rho Y
-            # X = (rho / (r + rho)) Y
-            self.aux_factor_matrix = self.rho * perturbed_factor / (self.ridge_penalty + self.rho)
+        #elif self.ridge_penalty:
+        #    # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
+        #    # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
+        #    # Differentiate wrt X:
+        #    # rX + rho (X - Y) = 0
+        #    # rX + rho X = rho Y
+        #    # (r + rho) X = rho Y
+        #    # X = (rho / (r + rho)) Y
+        #    self.aux_factor_matrix = self.rho * perturbed_factor / (self.ridge_penalty + self.rho)
         else:
             self.aux_factor_matrix = perturbed_factor
         pass

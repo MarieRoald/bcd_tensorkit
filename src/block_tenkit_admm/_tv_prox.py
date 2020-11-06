@@ -28,7 +28,7 @@ def flatten_vector(arrays, out=None):
     return out
 
 
-class TotalVariation:
+class TotalVariationProx:
     def __init__(self, center, reg_strength):
         self.center = center
         self.reg_strength = reg_strength

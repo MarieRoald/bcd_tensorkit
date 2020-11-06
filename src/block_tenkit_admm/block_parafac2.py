@@ -103,7 +103,7 @@ class ADMM(BaseSubProblem):
         # Prepare to compute choleskys
         lhs = self.cache['normal_eq_lhs']
         I = np.eye(decomposition.rank)
-        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho)*I)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho + self.ridge_penalty)*I)
 
     def _update_factor(self, decomposition):
         rhs = self.cache['normal_eq_rhs']  # X{kk}
@@ -133,7 +133,8 @@ class ADMM(BaseSubProblem):
             # rX + rho X = rho Y
             # (r + rho) X = rho Y
             # X = (rho / (r + rho)) Y
-            self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
+            self.aux_factor_matrix = perturbed_factor
+            # self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -449,11 +450,11 @@ class _SmartSymmetricPDSolver:
 
 
 def evolving_factor_total_variation(factor):
-    return _tv_prox.TotalVariation(factor, 1).center_penalty()
+    return _tv_prox.TotalVariationProx(factor, 1).center_penalty()
 
 
 def total_variation_prox(factor, strength):
-    return _tv_prox.TotalVariation(factor, strength).prox()
+    return _tv_prox.TotalVariationProx(factor, strength).prox()
 
 
 # TODO: Prox class for each kind of constraint, that will significantly reduce no. arguments
@@ -612,6 +613,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
             ]
         elif self.aux_init == "random":
             B = [np.random.standard_normal(Bk.shape)*np.median(np.abs(Bk)) for Bk in decomposition.B]
+            B = [np.random.uniform(size=Bk.shape) for Bk in decomposition.B]
             return [self.constraint_prox(Bk, decomposition) for Bk in B]
         else:
             raise ValueError(f"Invalid aux init, {self.aux_init}")
@@ -620,6 +622,7 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         if self.dual_init == "zeros":
             return [np.zeros_like(Bk) for Bk in decomposition.B]
         elif self.dual_init == "random":
+            return [np.random.uniform(size=Bk.shape) for Bk in decomposition.B]
             return [np.random.standard_normal(Bk.shape)*np.median(np.abs(Bk)) for Bk in decomposition.B]
         else:
             raise ValueError(f"Invalid dual init: {self.dual_init}")

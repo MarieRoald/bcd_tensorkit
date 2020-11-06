@@ -46,7 +46,7 @@ class BaseSubProblem:
     def load_from_hdf5_group(self, group):
         pass
 
-    def get_coupling_errors(self):
+    def get_coupling_errors(self, decomposition):
         return []
 
 
@@ -620,7 +620,9 @@ class Parafac2ADMM(BaseParafac2SubProblem):
         if self.dual_init == "zeros":
             return [np.zeros_like(Bk) for Bk in decomposition.B]
         elif self.dual_init == "random":
-            return [np.random.standard_normal(Bk.shape)*np.median(np.abs(Bk)) for Bk in decomposition.B]
+            return [np.random.standard_normal(aux_fm.shape)*np.median(np.abs(aux_fm)) for aux_fm in self.aux_factor_matrices]
+            # Previous init: 
+            # return [np.random.standard_normal(Bk.shape)*np.median(np.abs(Bk)) for Bk in decomposition.B]
         else:
             raise ValueError(f"Invalid dual init: {self.dual_init}")
 

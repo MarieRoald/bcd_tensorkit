@@ -692,9 +692,19 @@ class BlockEvolvingTensor(BaseDecomposer):
     def _check_valid_components(self, decomposition):
         assert type(decomposition) == tenkit.decomposition.EvolvingTensor
 
+    def init_pf2_als(self):
+        pf2 = tenkit.decomposition.Parafac2_ALS(self.rank, max_its=1, print_frequency=-1)
+        pf2.fit(list(self.X))
+
+        self.decomposition = self.DecompositionType(
+            pf2.decomposition.A, list(pf2.decomposition.B), pf2.decomposition.C
+        )
+
     def init_components(self, initial_decomposition=None):
         if self.init.lower() == 'random':
             self.init_random()
+        elif self.init.lower() == 'parafac2_als':
+            self.init_pf2_als()
         elif self.init.lower() == 'from_checkpoint':
             self.load_checkpoint(initial_decomposition)
         elif self.init.lower() == 'precomputed':

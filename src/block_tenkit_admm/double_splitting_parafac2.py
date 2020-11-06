@@ -12,7 +12,7 @@ from tenkit import utils
 
 from tenkit.decomposition.cp import get_sse_lhs
 from ._smoothness import _SmartSymmetricPDSolver
-
+from ._tv_prox import TotalVariationProx
 
 class BaseSubProblem(ABC):
     def __init__(self):
@@ -107,7 +107,9 @@ class Mode0ADMM(BaseSubProblem):
             self._update_duals(decomposition)
 
             if self._has_converged(decomposition):
-                return
+                break
+        
+        self.num_its = i
     
     def regulariser(self, decomposition):
         regulariser = 0
@@ -138,7 +140,7 @@ class Mode0ADMM(BaseSubProblem):
         # Prepare to compute choleskys
         lhs = self.cache['normal_eq_lhs']
         I = np.eye(decomposition.rank)
-        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho)*I)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho + self.ridge_penalty)*I)
 
     def _update_factor(self, decomposition):
         rhs = self.cache['normal_eq_rhs']  # X{kk}
@@ -153,8 +155,6 @@ class Mode0ADMM(BaseSubProblem):
         self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
     
     def _update_aux_factor_matrix(self, decomposition):
-        if self.non_negativity and self.ridge_penalty:
-            raise NotImplementedError
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
@@ -168,7 +168,10 @@ class Mode0ADMM(BaseSubProblem):
             # rX + rho X = rho Y
             # (r + rho) X = rho Y
             # X = (rho / (r + rho)) Y
-            self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
+
+            # The ridge penalty is now imposed on the data fitting term instead
+            self.aux_factor_matrix = perturbed_factor
+            #self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
         else:
             self.aux_factor_matrix = perturbed_factor
         pass
@@ -178,12 +181,12 @@ class Mode0ADMM(BaseSubProblem):
         coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
         coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
         
-        aux_change_sq = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        aux_change = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
         
-        dual_var_norm_sq = np.linalg.norm(self.dual_variables)**2
-        aux_change_criterion = (aux_change_sq + 1e-16) / (dual_var_norm_sq + 1e-16)
+        dual_var_norm = np.linalg.norm(self.dual_variables)**2
+        aux_change_criterion = (aux_change + 1e-16) / (dual_var_norm + 1e-16)
         if self.verbose:
-            print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
+            print("primal criteria", coupling_error, "dual criteria", aux_change)
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
@@ -256,7 +259,9 @@ class Mode2ADMM(BaseSubProblem):
             self._update_duals(decomposition)
 
             if self._has_converged(decomposition):
-                return
+                break
+        
+        self.num_its = i
     
     def regulariser(self, decomposition):
         regulariser = 0
@@ -325,15 +330,15 @@ class Mode2ADMM(BaseSubProblem):
     
     def _has_converged(self, decomposition):
         factor_matrix = decomposition.factor_matrices[self.mode]
-        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
-        coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
+        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)
+        coupling_error /= np.linalg.norm(self.aux_factor_matrix)
         
-        aux_change_sq = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        aux_change = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)
         
-        dual_var_norm_sq = np.linalg.norm(self.dual_variables)**2
-        aux_change_criterion = (aux_change_sq + 1e-16) / (dual_var_norm_sq + 1e-16)
+        dual_var_norm = np.linalg.norm(self.dual_variables)
+        aux_change_criterion = (aux_change + 1e-16) / (dual_var_norm + 1e-16)
         if self.verbose:
-            print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
+            print("primal criteria", coupling_error, "dual criteria", aux_change)
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
@@ -451,6 +456,9 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             if self.has_converged(decomposition):
                 break
 
+        
+        self.num_its = i
+
     def recompute_normal_equation(self, decomposition):
         K = decomposition.C.shape[0]
         self._cache['normal_eq_rhs'] = [None for _ in range(K)]
@@ -522,6 +530,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         if self.non_negativity and self.l1_penalty:
             return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
         elif self.tv_penalty:
+            return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
             raise NotImplementedError
             #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
         elif self.non_negativity:
@@ -545,36 +554,45 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
     def has_converged(self, decomposition):       
         K = decomposition.C.shape[0]
         
-        reg_coupling_error = 0
-        pf2_coupling_error = 0
-        sum_sq_factor = 0
+        relative_reg_coupling_error = 0
+        relative_pf2_coupling_error = 0
 
         relative_reg_change = 0
-        sum_sq_dual_reg = 0
-
         relative_pf2_change = 0
-        sum_sq_dual_pf2 = 0
 
         for k in range(K):
-            reg_coupling_error += np.linalg.norm(decomposition.B[k] - self.reg_Bks[k])**2
-            pf2_coupling_error += np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)**2
-            sum_sq_factor += np.linalg.norm(decomposition.B[k])
+            relative_reg_coupling_error += (
+                np.linalg.norm(decomposition.B[k] - self.reg_Bks[k])
+                /(np.linalg.norm(decomposition.B[k]) * K)
+            )
+            relative_pf2_coupling_error += (
+                np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)
+                /(np.linalg.norm(decomposition.B[k]) * K)
+            )
+            #sum_factor += np.linalg.norm(decomposition.B[k])
 
-            relative_reg_change += np.linalg.norm(self.previous_reg_Bks - self.reg_Bks[k])**2
-            sum_sq_dual_reg += np.linalg.norm(self.dual_variables_reg)**2
+            relative_reg_change += (
+                np.linalg.norm(self.previous_reg_Bks[k] - self.reg_Bks[k])
+                /(np.linalg.norm(self.dual_variables_reg[k]) * K)
+            )
+            #sum_dual_reg += np.linalg.norm(self.dual_variables_reg)
 
             previous_pf2_Bks = self.previous_projections[k]@self.previous_blueprint_B
             pf2_Bk = self.projection_matrices[k]@self.blueprint_B
-            relative_pf2_change += np.linalg.norm(previous_pf2_Bks - pf2_Bk)
-            sum_sq_dual_pf2 += np.linalg.norm(self.dual_variables_pf2)**2
+            relative_pf2_change += (
+                np.linalg.norm(previous_pf2_Bks - pf2_Bk)
+                /(np.linalg.norm(self.dual_variables_pf2[k]) * K)
+            )
+            #sum_dual_pf2 += np.linalg.norm(self.dual_variables_pf2)
 
-        relative_reg_change /= (sum_sq_dual_reg + 1e-16)/K
-        relative_pf2_change /= (sum_sq_dual_pf2 + 1e-16)/K
+        #relative_reg_change /= (sum_dual_reg + 1e-16)/K
+        #relative_pf2_change /= (sum_dual_pf2 + 1e-16)/K
         relative_change_criterion = max(relative_pf2_change, relative_reg_change)
 
-        relative_reg_coupling_error = reg_coupling_error/sum_sq_factor/K
-        relative_pf2_coupling_error = pf2_coupling_error/sum_sq_factor/K
+        #relative_reg_coupling_error = reg_coupling_error/sum_factor/K
+        #relative_pf2_coupling_error = pf2_coupling_error/sum_factor/K
         relative_coupling_criterion = max(relative_pf2_coupling_error, relative_reg_coupling_error)
+
 
         return relative_change_criterion < self.tol and relative_coupling_criterion < self.tol
 
@@ -598,6 +616,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             rank = decomposition.rank
             K = decomposition.C.shape[0]
             regulariser += sum(np.trace(B[k].T@W@B[k]) for k in range(K) for r in range(rank))
+
+        if self.tv_penalty is not None:
+            regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
+
 
         return regulariser
 

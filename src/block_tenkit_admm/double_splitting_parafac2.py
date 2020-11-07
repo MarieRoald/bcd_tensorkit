@@ -618,7 +618,8 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             regulariser += sum(np.trace(B[k].T@W@B[k]) for k in range(K) for r in range(rank))
 
         if self.tv_penalty is not None:
-            regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
+            for factor in decomposition.B:
+                regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
 
 
         return regulariser

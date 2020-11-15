@@ -13,12 +13,29 @@ from tenkit import utils
 from tenkit.decomposition.cp import get_sse_lhs
 from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
+from .hierarchical_nnls import nnls, prox_reg_nnls
+
 
 class BaseSubProblem(ABC):
     def __init__(self):
         pass
 
     def init_subproblem(self, mode, auxiliary_variables):
+        """Initialise the subproblem
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        auxiliary_variable: list[dict]
+            List of dictionaries, one dictionary per subproblem. All extra variables
+            used by the subproblems should be stored in its corresponding auxiliary_variables
+            dictionary
+        rank : int
+            The rank of the decomposition
+        X : np.ndarray
+            The dataset to fit against.
+        """
         pass
 
     def update_decomposition(self, decomposition, auxiliary_variables):
@@ -44,24 +61,49 @@ class Mode0RLS(BaseSubProblem):
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
 
-    def init_subproblem(self, mode, auxiliary_variables, rank, X):
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
         assert mode == 0
         self.mode = mode
-        self.X = X
+        self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
     def _get_rightsolve(self):
         rightsolve = base.rightsolve
         if self.non_negativity:
-            rightsolve = base.non_negative_rightsolve
+            rightsolve = nnls
         if self.ridge_penalty:
             rightsolve = base.add_rightsolve_ridge(rightsolve, self.ridge_penalty)
         return rightsolve
         
     def update_decomposition(self, decomposition, auxiliary_variables):
-        rightsolve = self._get_rightsolve()
-        right = np.concatenate([c*B for c, B in zip(decomposition.C, decomposition.B)], axis=0)
-        decomposition.A[...] = rightsolve(right.T, self.unfolded_X)
+        # TODO: This should all be fixed by _get_rightsolve
+        if self.non_negativity:
+            cross_product = 0
+            factors_times_data = 0
+            for k, Xk in enumerate(self.X):
+                Bk = decomposition.B[k]
+                Dk = np.diag(decomposition.C[k])
+                factors_times_data += Xk @ Bk @ Dk
+                cross_product += Dk @ Bk.T @ Bk @ Dk
+            
+            decomposition.A[...] = nnls(cross_product.T, factors_times_data.T, decomposition.A.T, 100).T
+        else:
+            rightsolve = self._get_rightsolve()
+            right = np.concatenate([c*B for c, B in zip(decomposition.C, decomposition.B)], axis=0)
+            decomposition.A[...] = rightsolve(right.T, self.unfolded_X)
+        
     
     def regulariser(self, decomposition):
         if not self.ridge_penalty:
@@ -70,7 +112,6 @@ class Mode0RLS(BaseSubProblem):
     
     def get_coupling_errors(self, decomposition):
         return []
-
 
 
 class Mode0ADMM(BaseSubProblem):
@@ -83,17 +124,30 @@ class Mode0ADMM(BaseSubProblem):
         self.auto_rho = (rho is None)
         self.verbose = verbose
     
-    def init_subproblem(self, mode, auxiliary_variables, rank, X):
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
         assert mode == 0
         self.mode = mode
-        self.X = X
+        self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
-        I = X[0].shape[0]
+        I = self.X[0].shape[0]
+        rank = decomposer.rank
         self.aux_factor_matrix = np.random.uniform(0, 1, size=(I, rank))
         self.dual_variables = np.random.uniform(0, 1, size=(I, rank))
-        auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
-        auxiliary_variables[0]['dual_variables'] = self.dual_variables
+        decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
+        decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
 
     def update_decomposition(self, decomposition, auxiliary_variables):
         self.cache = {}
@@ -190,16 +244,28 @@ class Mode0ADMM(BaseSubProblem):
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
-
 class Mode2RLS(BaseSubProblem):
     def __init__(self, non_negativity=False, ridge_penalty=0):
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
 
-    def init_subproblem(self, mode, auxiliary_variables, rank, X):
+    
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
         assert mode == 2
         self.mode = mode
-        self.X = X
+        self.X = decomposer.X
 
     def _get_rightsolve(self):
         rightsolve = base.rightsolve
@@ -210,6 +276,14 @@ class Mode2RLS(BaseSubProblem):
         return rightsolve
         
     def update_decomposition(self, decomposition, auxiliary_variables):
+        # TODO: This should all be fixed by _get_rightsolve
+        if self.non_negativity:
+            for k, (c_row, factor_matrix) in enumerate(zip(decomposition.C,  decomposition.B)):
+                X_k_vec = self.X[k].reshape(-1, 1)
+                lhs = base.khatri_rao(decomposition.A, factor_matrix)
+                c_row[...] = nnls(lhs, X_k_vec, c_row, 100)
+            return
+
         rightsolve = self._get_rightsolve()
         for k, (c_row, factor_matrix) in enumerate(zip(decomposition.C,  decomposition.B)):
             X_k_vec = self.X[k].reshape(-1, 1)
@@ -235,17 +309,31 @@ class Mode2ADMM(BaseSubProblem):
         self.auto_rho = (rho is None)
         self.verbose = verbose
     
-    def init_subproblem(self, mode, auxiliary_variables, rank, X):
+    
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
         assert mode == 2
         self.mode = mode
-        self.X = X
+        self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
-        K = len(X)
+        K = len(decomposer.X)
+        rank = decomposer.rank
         self.aux_factor_matrix = np.random.uniform(0, 1, size=(K, rank))
         self.dual_variables = np.random.uniform(0, 1, size=(K, rank))
-        auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
-        auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
+        decomposer.auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
+        decomposer.auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
 
     def update_decomposition(self, decomposition, auxiliary_variables):
         self.cache = {}
@@ -342,8 +430,6 @@ class Mode2ADMM(BaseSubProblem):
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
-
-
 def _random_orthogonal_matrix(num_rows, num_cols):
     return np.linalg.qr(np.random.standard_normal(size=(num_rows, num_cols)))[0]
 
@@ -362,6 +448,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         tv_penalty=None,
         verbose=False,
         l2_solve_method=None,
+        use_preinit=False
     ):
         if rho is None:
             self.auto_rho = True
@@ -380,14 +467,31 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self.l2_solve_method = l2_solve_method
 
+        self.use_preinit = use_preinit
+
         self._cache = {}
 
-    def init_subproblem(self, mode, auxiliary_variables, rank, X):
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
         assert mode == 1
 
-        K = len(X)
+        K = len(decomposer.X)
+        rank = decomposer.rank
+        X = decomposer.X
+
         self.mode = mode
-        self.X = X
+        self.X = decomposer.X
 
         self._cache['rho'] = [np.inf]*K
 
@@ -397,8 +501,17 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.dual_variables_reg = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
         self.dual_variables_pf2 = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
 
-        auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
-        auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
+            self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
+        else:
+            auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
+
+        if 'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
+            self.projection_matrices = auxiliary_variables[1]['projection_matrices']
+        else:
+            auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
         auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
         auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
@@ -625,7 +738,165 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         return regulariser
 
 
+class FlexibleCouplingParafac2(BaseSubProblem):
+    def __init__(
+        self,
+        mu_level=0.2,
+        max_mu=1e12,
+        mu_increase=1.05,
+        num_projection_its=5,
+        max_nnls_its=100,
+    ):
+        assert mu_increase > 1
+        assert max_mu > 0
+        assert mu_level > 0
+
+        self.mu_level = mu_level
+        self.max_mu = max_mu
+        self.mu_increase = mu_increase
+        self.num_projection_its = num_projection_its
+        self.max_nnls_its = max_nnls_its
+    
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
+        assert mode == 1
+
+        rank = decomposer.rank
+        X = decomposer.X
+        self.K = len(decomposer.X)
+        self.mode = mode
+        self.X = decomposer.X
+        self.X_slice_norms_sq = [np.linalg.norm(Xk)**2 for Xk in self.X]
+        self.X_norm_sq = sum(self.X_slice_norms_sq)
+
+        self.mu = np.empty(self.K)
+        self.current_iteration = 0
+
+        self.blueprint_B = np.random.uniform(size=(rank, rank))
+        self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(self.K)]
+
+        decomposer.auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
+        decomposer.auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+
+    def update_decomposition(
+        self, decomposition, auxiliary_variables
+    ):
+        if self.current_iteration == 0:
+            slice_wise_sse = [np.linalg.norm(self.X[k] - decomposition.construct_slice(k))**2 for k in range(self.K)]
+            # mu[k] = 0.1 * ||X[k] - AD[k]B[k]^T||^2 / ||B[k]||^2
+            self.mu[:] = [slice_wise_sse[k]/(10*np.linalg.norm(decomposition.B[k])**2) for k in range(self.K)]
+        elif self.current_iteration ==1:
+            slice_wise_sse = [np.linalg.norm(self.X[k] - decomposition.construct_slice(k))**2 for k in range(self.K)]
+            coupling_error = [np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)**2 for k in range(self.K)]
+            self.mu[:] = [slice_wise_sse[k] / (self.mu[k]*coupling_error[k]) for k in range(self.K)]
+
+        # Update projections and blueprint
+        self.update_blueprint_and_projections(decomposition)
+        
+        # Update the factor matrices
+        self.update_B(decomposition)
+
+        self.mu *= self.mu_increase
+        self.mu[self.mu > self.max_mu] = self.max_mu
+
+        self.current_iteration += 1
+
+
+    def update_blueprint_and_projections(self, decomposition):
+        for i in range(self.num_projection_its):
+            B_mean = 0
+            for k in range(self.K):
+                B_mean += self.mu[k] * (self.projection_matrices[k].T@decomposition.B[k])
+            self.blueprint_B[:] = B_mean / np.sum(self.mu)
+            self.blueprint_B[:] /= np.linalg.norm(self.blueprint_B, keepdims=True)
+
+            for k in range(self.K):
+                U, s, Vh = np.linalg.svd(decomposition.B[k] @ self.blueprint_B.T, full_matrices=False)
+                self.projection_matrices[k][:] = U@Vh
+    
+    def update_B(self, decomposition):
+        for k in range(self.K):
+            ADk = decomposition.A * decomposition.C[k, np.newaxis]
+            PkB = self.projection_matrices[k]@self.blueprint_B
+            decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+        
+    def get_coupling_errors(self, decomposition):
+        coupling_error = 0
+        for k in range(self.K):
+            PkB = self.projection_matrices[k]@self.blueprint_B
+            coupling_error += np.linalg.norm(PkB - decomposition.B[k])/np.linalg.norm(decomposition.B[k])
+        return coupling_error
+    
+    def get_weighted_squared_coupling_errors(self, decomposition):
+        err = 0
+        for k in range(self.K):
+            PkB = self.projection_matrices[k]@self.blueprint_B
+            err += self.mu[k] * np.linalg.norm(PkB - decomposition.B[k])**2
+        return err
+
+
+# TODO: UNUSED IDEA:
+class ConvergenceChecker:
+    @abstractmethod
+    def check_tolerance(self, decomposer):
+        pass
+    
+class LossChecker:
+    def __init__(self, relative_tolerance, absolute_tolerance):
+        self.relative_tolerance = relative_tolerance
+        self.absolute_tolerance = absolute_tolerance
+        self.previous_loss = None
+    
+    def check_tolerance(self, decomposer):
+        if self.previous_loss is None:
+            self.previous_loss = decomposer.loss
+            return False
+        
+        # Shorter names to get equations on a single line
+        loss = decomposer.loss
+        prev_loss = self.previous_loss
+        abs_tol = self.absolute_tolerance
+        rel_tol = self.relative_tolerance
+        rel_criterion = prev_loss - loss / rel_tol*prev_loss
+        abs_criterion = prev_loss - loss < abs_tol
+        
+        self.previous_loss = loss
+        return rel_criterion or abs_criterion
+
+
+
 class BlockEvolvingTensor(BaseDecomposer):
+    """
+    Example usage
+
+    .. code::
+
+        sub_problems = [...]
+        pf2 = BlockEvolvingTensor(rank, subproblems)
+        pf2.fit(X)
+    
+
+    Behind the scenes, this calls
+
+    .. code::
+
+        for subproblem in pf2.sub_problems:
+            sub_problem.init_subproblem(...)
+
+        pf2._init_fit(...)
+        pf2._fit(...)
+    """
     DecompositionType = tenkit.decomposition.EvolvingTensor
     def __init__(
         self,
@@ -639,7 +910,9 @@ class BlockEvolvingTensor(BaseDecomposer):
         checkpoint_path=None,
         print_frequency=None,
         convergence_check_frequency=1,
-        absolute_tol=1e-16
+        absolute_tol=1e-16,
+        problem_order=(1, 0, 2),
+        convergence_method="admm"
     ):
         super().__init__(
             max_its=max_its,
@@ -655,6 +928,8 @@ class BlockEvolvingTensor(BaseDecomposer):
         self.convergence_check_frequency = convergence_check_frequency
         self.auxiliary_variables = [{}, {}, {}]
         self.absolute_tolerance = absolute_tol
+        self.problem_order = problem_order
+        self.convergence_method = convergence_method
 
     @property
     def regularisation_penalty(self):
@@ -671,20 +946,22 @@ class BlockEvolvingTensor(BaseDecomposer):
 
     def _fit(self):
         if self.checkpoint_frequency > 0:
+            # TODO: Consider to do this for tenkit too
             self.store_checkpoint()
             
         for it in range(self.max_its - self.current_iteration):
             if self._has_converged():
                 break
 
-            self._update_evolving_tensors_factors()
+            self._update_evolving_tensor_factors()
+            # TODO: _after_fit_cleanup()?
             self._after_fit_iteration()
 
             if self.current_iteration % self.print_frequency == 0 and self.print_frequency > 0:
                 rel_change = self._rel_function_change
 
                 print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-                      f'improvement is {rel_change:g}, {self.coupling_errors}')
+                      f'improvement is {rel_change:g}, coupling_errors: {self.coupling_errors}')
 
         if (
             ((self.current_iteration) % self.checkpoint_frequency != 0) and 
@@ -692,36 +969,28 @@ class BlockEvolvingTensor(BaseDecomposer):
         ):
             self.store_checkpoint() 
         
-    def _update_evolving_tensors_factors(self):
+    def _update_evolving_tensor_factors(self):
+        for problem_id in self.problem_order:
         # The function below updates the decomposition and the projected X inplace.
         # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
         #               f'improvement is {self._rel_function_change:g}')
-        self.sub_problems[1].update_decomposition(
-            self.decomposition, self.auxiliary_variables,
-        )
-
-        # print(f'Before {self.current_iteration:6d}A: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-        #               f'improvement is {self._rel_function_change:g}')
-        self.sub_problems[0].update_decomposition(
-            self.decomposition, self.auxiliary_variables,
-        )
-
-        # print(f'Before {self.current_iteration:6d}C: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-        #               f'improvement is {self._rel_function_change:g}')
-        self.sub_problems[2].update_decomposition(
-            self.decomposition, self.auxiliary_variables,
-        )
+            self.sub_problems[problem_id].update_decomposition(
+                self.decomposition, self.auxiliary_variables,
+            )
 
     def _check_valid_components(self, decomposition):
         assert type(decomposition) == tenkit.decomposition.EvolvingTensor
 
     def init_pf2_als(self):
+        # Should we have an init_params dict?
         pf2 = tenkit.decomposition.Parafac2_ALS(self.rank, max_its=1, print_frequency=-1)
         pf2.fit(list(self.X))
 
         self.decomposition = self.DecompositionType(
             pf2.decomposition.A, list(pf2.decomposition.B), pf2.decomposition.C
         )
+        self.auxiliary_variables[1]['projection_matrices'] = list(pf2.decomposition.projection_matrices)
+        self.auxiliary_variables[1]['blueprint_B'] = pf2.decomposition.blueprint_B
 
     def init_components(self, initial_decomposition=None):
         if self.init.lower() == 'random':
@@ -746,7 +1015,7 @@ class BlockEvolvingTensor(BaseDecomposer):
         super()._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition)
 
         for i, sub_problem in enumerate(self.sub_problems):
-            sub_problem.init_subproblem(i, self.auxiliary_variables, self.rank, self.X)
+            sub_problem.init_subproblem(i, self)
         self.prev_loss = self.loss
         self.prev_sse = self.SSE
         self.prev_reg = self.regularisation_penalty
@@ -839,21 +1108,37 @@ class BlockEvolvingTensor(BaseDecomposer):
                     raise ValueError("No valid decomposition")
 
     def _has_converged(self):
-        if self.current_iteration == 0:
-            return False
-        loss = self.loss
-        self._rel_function_change = abs(self.prev_loss - self.loss) / self.prev_loss
-        self.prev_loss = loss
-
-        coupling_errors = self.coupling_errors
-        for coupling_error, prev_coupling_error in zip(coupling_errors, self.prev_coupling_errors):
-            coupling_change = abs(prev_coupling_error - coupling_error)
-            relative_coupling_change = coupling_change/prev_coupling_error
-            if coupling_error > self.absolute_tolerance and relative_coupling_change > self.convergence_tol:
+        if self.convergence_method == "flex":
+            if self.current_iteration % (self.max_its / 10) != 0:
                 return False
-        self.prev_coupling_errors = coupling_errors
-        
-        return loss < self.absolute_tolerance or self._rel_function_change < self.convergence_tol
+            coupling_error = self.sub_problems[1].get_weighted_squared_coupling_errors(self.decomposition)
+            sse = self.SSE
+            if not hasattr(self, "conv_criterion"):
+                self.conv_criterion = (coupling_error + sse) / self.X_norm
+                return False
+            prev_conv_crit = self.conv_criterion
+            self.conv_criterion = (coupling_error + sse) / self.X_norm
+            self._rel_function_change = self.conv_criterion
+            return (prev_conv_crit - self.conv_criterion)/prev_conv_crit > self.convergence_tol
+
+        elif self.convergence_method == "admm":
+            if self.current_iteration == 0:
+                return False
+            loss = self.loss
+            self._rel_function_change = abs(self.prev_loss - self.loss) / self.prev_loss
+            self.prev_loss = loss
+
+            coupling_errors = self.coupling_errors
+            for coupling_error, prev_coupling_error in zip(coupling_errors, self.prev_coupling_errors):
+                coupling_change = abs(prev_coupling_error - coupling_error)
+                relative_coupling_change = coupling_change/prev_coupling_error
+                if coupling_error > self.absolute_tolerance and relative_coupling_change > self.convergence_tol:
+                    return False
+            self.prev_coupling_errors = coupling_errors
+            
+            return loss < self.absolute_tolerance or self._rel_function_change < self.convergence_tol
+        else:
+            raise ValueError("convergence method must be admm or flex")
 
     @property
     def coupling_error(self):

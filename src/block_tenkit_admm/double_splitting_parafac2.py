@@ -444,6 +444,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         non_negativity=False,
         l2_similarity=None,
+        ridge_penalty=None,
         l1_penalty=None,
         tv_penalty=None,
         verbose=False,
@@ -464,6 +465,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.l2_similarity = l2_similarity
         self.l1_penalty = l1_penalty
         self.tv_penalty = tv_penalty
+        self.ridge_penalty = ridge_penalty
 
         self.l2_solve_method = l2_solve_method
 
@@ -593,7 +595,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         rhos = self._cache['rho']
         normal_eq_lhs = self._cache['normal_eq_lhs']
         I = np.eye(decomposition.rank)
-        self._cache['choleskys'] = [sla.cho_factor(lhs + (rho)*I) for rho, lhs in zip(rhos, normal_eq_lhs)]
+        self._cache['choleskys'] = [sla.cho_factor(lhs + (rho + self.ridge_penalty)*I) for rho, lhs in zip(rhos, normal_eq_lhs)]
 
     def update_unconstrained(self, decomposition):
         K = decomposition.C.shape[0]
@@ -728,12 +730,19 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             W = self.l2_similarity
             rank = decomposition.rank
             K = decomposition.C.shape[0]
-            regulariser += sum(np.trace(B[k].T@W@B[k]) for k in range(K) for r in range(rank))
+            regulariser += sum(
+                np.trace(B[k].T@W@B[k]) 
+                for k in range(K) 
+                for r in range(rank)
+            )
 
         if self.tv_penalty is not None:
             for factor in decomposition.B:
                 regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
 
+        if self.ridge_penalty is not None:
+            B = decomposition.B
+            regulariser += sum(np.linalg.norm(Bk)**2 for Bk in B)
 
         return regulariser
 

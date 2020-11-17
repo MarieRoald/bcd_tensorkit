@@ -15,6 +15,7 @@ from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
 from .hierarchical_nnls import nnls, prox_reg_nnls
 
+# TODO: Input random state for init
 
 class BaseSubProblem(ABC):
     def __init__(self):
@@ -466,6 +467,8 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.l1_penalty = l1_penalty
         self.tv_penalty = tv_penalty
         self.ridge_penalty = ridge_penalty
+        if self.ridge_penalty is None:
+            self.ridge_penalty = 0
 
         self.l2_solve_method = l2_solve_method
 

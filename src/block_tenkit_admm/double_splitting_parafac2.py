@@ -1080,7 +1080,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.mu_increase = mu_increase
         self.num_projection_its = num_projection_its
         self.max_nnls_its = max_nnls_its
-        self.non_negativity = True
+        self.non_negativity = non_negativity
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem

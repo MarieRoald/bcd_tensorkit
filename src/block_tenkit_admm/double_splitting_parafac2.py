@@ -58,6 +58,13 @@ class BaseSubProblem(ABC):
 
 
 class Mode0RLS(BaseSubProblem):
+    """
+    Subproblem class used to update the first mode of an evolving tensor decomposition.
+    
+    Initialised before the decomposer, and init_subproblem is called before the first
+    fitting iteration. The update_decomposition method is called each factor
+    update iteration.
+    """
     def __init__(self, non_negativity=False, ridge_penalty=0):
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
@@ -75,8 +82,8 @@ class Mode0RLS(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 0
-        self.mode = mode
+        #assert mode == 0
+        self.mode = 0
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
@@ -104,7 +111,6 @@ class Mode0RLS(BaseSubProblem):
             rightsolve = self._get_rightsolve()
             right = np.concatenate([c*B for c, B in zip(decomposition.C, decomposition.B)], axis=0)
             decomposition.A[...] = rightsolve(right.T, self.unfolded_X)
-        
     
     def regulariser(self, decomposition):
         if not self.ridge_penalty:
@@ -138,8 +144,8 @@ class Mode0ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 0
-        self.mode = mode
+        #assert mode == 0
+        self.mode = 0
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
@@ -264,8 +270,8 @@ class Mode2RLS(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 2
-        self.mode = mode
+        #assert mode == 2
+        self.mode = 2
         self.X = decomposer.X
 
     def _get_rightsolve(self):
@@ -324,8 +330,8 @@ class Mode2ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 2
-        self.mode = mode
+        #assert mode == 2
+        self.mode = 2
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
@@ -489,13 +495,13 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 1
+        #assert mode == 1
 
         K = len(decomposer.X)
         rank = decomposer.rank
         X = decomposer.X
 
-        self.mode = mode
+        self.mode = 1
         self.X = decomposer.X
 
         self._cache['rho'] = [np.inf]*K
@@ -574,7 +580,6 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             if self.has_converged(decomposition):
                 break
 
-        
         self.num_its = i
 
     def recompute_normal_equation(self, decomposition):
@@ -749,6 +754,313 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         return regulariser
 
 
+class SingleSplittingParafac2ADMM(BaseSubProblem):
+    def __init__(
+        self,
+        rho=None,
+        auto_rho_scaling=1,
+        tol=1e-3,
+        max_it=5,
+
+        non_negativity=False,
+        l2_similarity=None,
+        ridge_penalty=None,
+        l1_penalty=None,
+        tv_penalty=None,
+        verbose=False,
+        l2_solve_method=None,
+        use_preinit=True,
+    ):
+        if rho is None:
+            self.auto_rho = True
+        else:
+            self.auto_rho = False
+        self.auto_rho_scaling = auto_rho_scaling
+
+        self.rho = rho
+        self.tol = tol
+        self.max_it = max_it
+     
+        self.non_negativity = non_negativity
+        self.l2_similarity = l2_similarity
+        self.l1_penalty = l1_penalty
+        self.ridge_penalty = ridge_penalty
+        self.tv_penalty = tv_penalty
+        if self.ridge_penalty is None:
+            self.ridge_penalty = 0
+
+        self.l2_solve_method = l2_solve_method
+
+        self.use_preinit = use_preinit
+
+        self._cache = {}
+
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
+        K = len(decomposer.X)
+        rank = decomposer.rank
+        X = decomposer.X
+
+        self.mode = mode
+        self.X = decomposer.X
+
+        self._cache['rho'] = [np.inf]*K
+
+        self.blueprint_B = np.random.uniform(size=(rank, rank))
+        self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(K)]
+        self.reg_Bks = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
+            self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
+        else:
+            auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
+
+        if 'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
+            self.projection_matrices = auxiliary_variables[1]['projection_matrices']
+        else:
+            auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+        auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
+        auxiliary_variables[1]['dual_variables'] = self.dual_variables
+
+        self.update_projected_tensor(decomposer.decomposition, auxiliary_variables)
+
+    def update_decomposition(
+        self, decomposition, auxiliary_variables
+    ):
+        previous_reg_Bks = self._cache.get(
+            'previous_reg_Bks', [reg_Bk.copy() for reg_Bk in self.reg_Bks]
+        )
+        self._cache = {}
+        self._cache['previous_reg_Bks'] = previous_reg_Bks
+        self.recompute_normal_equation(decomposition)
+        self.set_rho(decomposition)
+        self.recompute_cholesky_cache(decomposition)
+        self.update_smoothness_prox()
+        # breakpoint()
+        # The decomposition is modified inplace each iteration            
+        for i in range(self.max_it):
+            self.update_projections(decomposition)
+            self.update_projected_tensor(decomposition, auxiliary_variables)
+            self.update_blueprint(decomposition)
+            
+            # This is ran iteration since it is needed for reg factors and duals
+            self.update_decomposition_Bs(decomposition)  
+
+            self.update_reg_factors(decomposition)
+            self.update_duals(decomposition)
+
+            if self.has_converged(decomposition):
+                for k, reg_Bk in enumerate(self.reg_Bks):
+                    self._cache['previous_reg_Bks'][k][:] = reg_Bk
+                break
+            
+            for k, reg_Bk in enumerate(self.reg_Bks):
+                self._cache['previous_reg_Bks'][k][:] = reg_Bk
+            
+
+        self.num_its = i
+    
+    def recompute_normal_equation(self, decomposition):
+        A = decomposition.A
+        C = decomposition.C
+        self._cache['normal_eq_lhs'] = (A.T@A) * (C.T@C)
+
+    def set_rho(self, decomposition):
+        self._cache['rho'] = np.trace(self._cache['normal_eq_lhs'])
+
+    def recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        K = decomposition.C.shape[0]
+        rho = self._cache['rho']
+        lhs = self._cache['normal_eq_lhs']
+        I = np.eye(decomposition.rank)
+        self._cache['cholesky'] = sla.cho_factor(lhs + (0.5*K*rho + self.ridge_penalty)*I)
+
+    def update_projections(self, decomposition):
+        """
+        
+        """
+        A = decomposition.A
+        blueprint_B = self.blueprint_B
+        C = decomposition.C
+        rho = self._cache['rho']
+        for k, X_k in enumerate(self.X):
+            unreg_lhs = (A*C[k])@(blueprint_B.T)
+            reg_lhs = np.sqrt(rho/2)*(blueprint_B.T)
+            lhs = np.vstack((unreg_lhs, reg_lhs))
+
+            unreg_rhs = X_k
+            reg_rhs = np.sqrt(rho/2)*(self.reg_Bks[k] - self.dual_variables[k]).T
+            rhs = np.vstack((unreg_rhs, reg_rhs))
+            
+            self.projection_matrices[k][:] = base.orthogonal_solve(lhs, rhs).T
+    
+    def update_projected_tensor(self, decomposition, auxiliary_matrices):
+        self._cache['projected_tensor'] = tenkit.decomposition.parafac2.compute_projected_X(
+            self.projection_matrices,
+            self.X,
+            out=self._cache.get('projected_tensor', None)
+        )
+
+        self._cache['normal_eq_rhs'] = base.matrix_khatri_rao_product(
+            self._cache['projected_tensor'],
+            [decomposition.A, self.blueprint_B, decomposition.C],
+            mode=1
+        )
+
+    def update_blueprint(self, decomposition):
+        r"""
+        ' -> transpose
+        .khat. -> Khatri rao
+        Y -> projected X unfolded along second mode
+
+        || (A .khat. C) B' - Y || + \sum_k 0.5 \rho ||(P_k B - (Breg_k - U_k))'||^2
+
+        M = (A .khat .C)
+
+        Differentiate,
+        Traces are implicit (which is ok since traces are invariant to cyclic permutations)
+
+        2M' M B' - 2M' Y + \sum_k \rho (P_k' P_k B) - P_k' (Breg_k - U_k)) = 0
+        (M'M B' + K \rho I) B' = M' Y + \sum_k \rho P_k' (Breg_k - U_k)
+        """
+        chol_lhs = self._cache['cholesky']  # L L' = (A'A * C'C) + 0.5 * rho * K *I
+        rho = self._cache['rho']
+        rhs = self._cache['normal_eq_rhs'].copy()     # Y(1) (A .khat. C)
+        reg_Bks = self.reg_Bks
+        dual_variables = self.dual_variables
+        for projection_matrix, reg_Bk, dual_matrix in zip(self.projection_matrices, reg_Bks, dual_variables):
+            rhs += 0.5*rho*projection_matrix.T@(reg_Bk - dual_matrix)
+
+        self.blueprint_B[:] = sla.cho_solve(chol_lhs, rhs.T).T   
+
+    def update_decomposition_Bs(self, decomposition):
+        """Insert Pk B for B in the evolving tensor decomposition.
+        """
+        for Bk, projection_matrix in zip(decomposition.B, self.projection_matrices):
+            Bk[:] = projection_matrix @ self.blueprint_B
+
+    def update_reg_factors(self, decomposition):
+        self.previous_reg_Bks = [bk for bk in self.reg_Bks]
+        Bks = decomposition.B  # This is updated in the update_blueprint method
+        dual_vars = self.dual_variables
+        merged_Bks = np.concatenate(Bks, axis=1)
+        merged_dual_vars = np.concatenate(dual_vars, axis=1)
+        proxed_values = self.prox(merged_Bks + merged_dual_vars)
+
+        for k, reg_Bk in enumerate(self.reg_Bks):
+            reg_Bk[:] = proxed_values[:, k*decomposition.rank:(k+1)*decomposition.rank]
+        return
+
+        for k, reg_Bk in enumerate(self.reg_Bks):
+            reg_Bk[:] = self.prox(Bks[k] + dual_vars[k],)
+
+    def update_duals(self, decomposition):
+        K = decomposition.C.shape[0]
+        for k in range(K):
+            self.dual_variables[k] += decomposition.B[k] - self.reg_Bks[k]
+
+    def prox(self, factor_matrix):
+        # TODO: Comments
+        # TODO: Check compatibility between different proxes
+        # The above todo is not necessary if we implement a separate prox-class.
+        rho = self._cache['rho']
+        if self.non_negativity and self.l1_penalty:
+            return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
+        elif self.tv_penalty:
+            return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
+            #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
+        elif self.non_negativity:
+            return np.maximum(factor_matrix, 0)
+        elif self.l1_penalty:
+            return np.sign(factor_matrix)*np.maximum(np.abs(factor_matrix) - 2*self.l1_penalty/rho, 0)
+        elif self.l2_similarity is not None:
+            # Solve (2L + rho I)x = y -> (L + 0.5*rho I)x = 0.5*rho*y
+            reg_solver = self._cache['l2_reg_solver']
+            rhs = 0.5*rho*factor_matrix
+            return reg_solver.solve(rhs)
+        else:
+            return factor_matrix
+
+    def update_smoothness_prox(self):
+        if self.l2_similarity is None:
+            return
+
+        if sparse.issparse(self.l2_similarity):
+            I = sparse.eye(self.l2_similarity.shape[0])
+        else:
+            I = np.identity(self.l2_similarity.shape[0])
+        
+        rho = self._cache['rho']
+        reg_matrix = self.l2_similarity + 0.5*rho*I
+
+        self._cache['l2_reg_solver'] = _SmartSymmetricPDSolver(reg_matrix, method=self.l2_solve_method)
+
+    def has_converged(self, decomposition):   
+        K = decomposition.C.shape[0]
+        
+        relative_coupling_criterion = 0
+        relative_change_criterion = 0
+
+        for k in range(K):
+            relative_coupling_criterion += (
+                np.linalg.norm(decomposition.B[k] - self.reg_Bks[k])
+                /(np.linalg.norm(decomposition.B[k]) * K)
+            )
+
+            previous_reg_Bks = self._cache['previous_reg_Bks']
+            relative_change_criterion += (
+                np.linalg.norm(previous_reg_Bks[k] - self.reg_Bks[k])
+                /(np.linalg.norm(self.dual_variables[k]) * K)
+            )
+
+        return relative_change_criterion < self.tol and relative_coupling_criterion < self.tol
+
+    def get_coupling_errors(self, decomposition):
+        K = len(self.projection_matrices)
+        coupling_error = 0
+        for k in range(K):
+            factor_diff = self.reg_Bks[k] - decomposition.B[k]
+            coupling_error += np.linalg.norm(factor_diff)/np.linalg.norm(decomposition.B[k])
+
+        return [coupling_error]
+
+    def regulariser(self, decomposition):
+        regulariser = 0
+        if self.l2_similarity is not None:
+            B = decomposition.B
+            W = self.l2_similarity
+            rank = decomposition.rank
+            K = decomposition.C.shape[0]
+            regulariser += sum(
+                np.trace(B[k].T@W@B[k]) 
+                for k in range(K) 
+            )
+
+        if self.tv_penalty is not None:
+            for factor in decomposition.B:
+                regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
+
+        if self.ridge_penalty is not None:
+            B = decomposition.B
+            regulariser += sum(np.linalg.norm(Bk)**2 for Bk in B)
+
+        return regulariser
+
+
 class FlexibleCouplingParafac2(BaseSubProblem):
     def __init__(
         self,
@@ -781,12 +1093,12 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        assert mode == 1
+        #assert mode == 1
 
         rank = decomposer.rank
         X = decomposer.X
         self.K = len(decomposer.X)
-        self.mode = mode
+        self.mode = 1
         self.X = decomposer.X
         self.X_slice_norms_sq = [np.linalg.norm(Xk)**2 for Xk in self.X]
         self.X_norm_sq = sum(self.X_slice_norms_sq)
@@ -886,7 +1198,7 @@ class LossChecker:
         return rel_criterion or abs_criterion
 
 
-
+# Main class
 class BlockEvolvingTensor(BaseDecomposer):
     """
     Example usage
@@ -898,15 +1210,47 @@ class BlockEvolvingTensor(BaseDecomposer):
         pf2.fit(X)
     
 
-    Behind the scenes, this calls
+    Behind the scenes, the fit method calls
 
     .. code::
-
-        for subproblem in pf2.sub_problems:
-            sub_problem.init_subproblem(...)
-
         pf2._init_fit(...)
+            pf2._init_decomposition(...)
+            for subproblem in pf2.sub_problems:
+                sub_problem.init_subproblem(...)
+            # Prepare for convergence checking
+
         pf2._fit(...)
+            pf2._update_decomposition(...)
+                for sub_problem in pf2.sub_problems:
+                    sub_problem.update_decomposition(...)
+            pf2._after_fit_iteration(..)
+    
+    Arguments
+    ---------
+    rank : int
+        Rank of the decomposition
+    sub_problems : list
+        List of length 3, each element is a subproblem instance
+        that takes care of updating the components for one mode
+    max_its : int
+        Maximum number of iterations
+    convergence_tol : float
+        Relative convergence tolerance
+    init: str
+        Method used to initialise the components random or parafac2_als
+    loggers : list
+        List of loggers, alternatively None if no loggers are used
+    checkpoint_frequency : int 
+        How often checkpoints should be stored to disk
+    checkpoint_path : str or Path
+        Path to HDF5 file the checkpoints should be stored in
+    absolute_tol : float
+        Absolute tolerance. Iterations stop if loss decrease is less than this
+    problem_order : tuple
+        Tuple containing the numbers 0, 1 and 2. 
+        Specifies the order in which modes are updated
+    convergence_method : str
+        Method used to specify convergence, admm or flex
     """
     DecompositionType = tenkit.decomposition.EvolvingTensor
     def __init__(
@@ -964,7 +1308,7 @@ class BlockEvolvingTensor(BaseDecomposer):
             if self._has_converged():
                 break
 
-            self._update_evolving_tensor_factors()
+            self._update_decomposition()
             # TODO: _after_fit_cleanup()?
             self._after_fit_iteration()
 
@@ -980,7 +1324,7 @@ class BlockEvolvingTensor(BaseDecomposer):
         ):
             self.store_checkpoint() 
         
-    def _update_evolving_tensor_factors(self):
+    def _update_decomposition(self):
         for problem_id in self.problem_order:
         # The function below updates the decomposition and the projected X inplace.
         # print(f'Before {self.current_iteration:6d}B: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
@@ -1153,4 +1497,4 @@ class BlockEvolvingTensor(BaseDecomposer):
 
     @property
     def coupling_error(self):
-        return sum(self.coupling_errors)
+        return sum(self.coupling_errors)                                                                                              

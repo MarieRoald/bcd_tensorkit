@@ -1069,6 +1069,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         mu_increase=1.05,
         num_projection_its=5,
         max_nnls_its=100,
+        non_negativity=True
     ):
         assert mu_increase > 1
         assert max_mu > 0
@@ -1079,6 +1080,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.mu_increase = mu_increase
         self.num_projection_its = num_projection_its
         self.max_nnls_its = max_nnls_its
+        self.non_negativity = True
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -1135,7 +1137,6 @@ class FlexibleCouplingParafac2(BaseSubProblem):
 
         self.current_iteration += 1
 
-
     def update_blueprint_and_projections(self, decomposition):
         for i in range(self.num_projection_its):
             B_mean = 0
@@ -1152,7 +1153,21 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         for k in range(self.K):
             ADk = decomposition.A * decomposition.C[k, np.newaxis]
             PkB = self.projection_matrices[k]@self.blueprint_B
-            decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+
+            if self.non_negativity:
+                decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+            else:
+                # || (ADk) B^T - Xk ||^2 + µ ||Bk^T - (PkB)^T||^2
+                # B (ADk)^T (ADk) B^T - 2 B (ADk)^T Xk + µ Bk Bk^T - 2µ Bk (PkB)^T
+                # Differentiate
+                # 2 (ADk)^T (ADk) B^T - 2 (ADk)^T Xk + 2µ Bk^T - 2µ (PkB)^T = 0
+                # 2 (ADk)^T (ADk) B^T  + 2µ Bk^T =  2 (ADk)^T Xk + 2µ (PkB)^T 
+                # ((ADk)^T (ADk) + µI) B^T = (ADk)^T Xk + µ (PkB)^T 
+
+                I = np.eye(ADk.shape[1])
+                lhs = ADk.T@ADk + self.mu[k]*I
+                rhs = (ADk.T) @ self.X[k] + self.mu[k] * (PkB.T)
+                decomposition.B[k][:] = np.linalg.solve(lhs, rhs).T
         
     def get_coupling_errors(self, decomposition):
         coupling_error = 0

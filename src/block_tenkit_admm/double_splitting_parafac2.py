@@ -9,6 +9,7 @@ from tenkit import base
 import h5py
 from warnings import warn
 from tenkit import utils
+from condat_tv import tv_denoise_matrix
 
 from tenkit.decomposition.cp import get_sse_lhs
 from ._smoothness import _SmartSymmetricPDSolver
@@ -653,6 +654,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         if self.non_negativity and self.l1_penalty:
             return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
         elif self.tv_penalty:
+            return tv_denoise_matrix(factor_matrix.T, self.tv_penalty/rho).T
             return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
             raise NotImplementedError
             #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
@@ -981,6 +983,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         if self.non_negativity and self.l1_penalty:
             return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
         elif self.tv_penalty:
+            return tv_denoise_matrix(factor_matrix.T, self.tv_penalty/rho).T
             return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
             #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
         elif self.non_negativity:

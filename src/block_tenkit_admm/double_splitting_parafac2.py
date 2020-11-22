@@ -222,9 +222,9 @@ class Mode0ADMM(BaseSubProblem):
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
         if self.non_negativity and self.l1_penalty:
-            return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
+            return np.maximum(self.aux_factor_matrix - 2*self.l1_penalty/self.rho, 0)
         elif self.l1_penalty:
-            return np.sign(factor_matrix)*np.maximum(np.abs(factor_matrix) - 2*self.l1_penalty/rho, 0)
+            return np.sign(self.aux_factor_matrix)*np.maximum(np.abs(self.aux_factor_matrix) - 2*self.l1_penalty/self.rho, 0)
         elif self.non_negativity:
             self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
         elif self.ridge_penalty:

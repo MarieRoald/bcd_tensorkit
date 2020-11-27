@@ -765,6 +765,326 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         return regulariser
 
+
+# TODO: Merge with class above
+class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
+    def __init__(
+        self,
+        rho=None,
+        auto_rho_scaling=1,
+        tol=1e-3,
+        max_it=5,
+
+        non_negativity=False,
+        l2_similarity=None,
+        ridge_penalty=None,
+        l1_penalty=None,
+        tv_penalty=None,
+        verbose=False,
+        l2_solve_method=None,
+        use_preinit=False,
+    ):
+        if rho is None:
+            self.auto_rho = True
+        else:
+            self.auto_rho = False
+        self.auto_rho_scaling = auto_rho_scaling
+
+        self.rho = rho
+        self.tol = tol
+        self.max_it = max_it
+     
+        self.non_negativity = non_negativity
+        self.l2_similarity = l2_similarity
+        self.l1_penalty = l1_penalty
+        self.tv_penalty = tv_penalty
+        self.ridge_penalty = ridge_penalty
+        if self.ridge_penalty is None:
+            self.ridge_penalty = 0
+
+        self.l2_solve_method = l2_solve_method
+
+        self.use_preinit = use_preinit
+
+        self._cache = {}
+
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+            The decomposer that uses this subproblem
+        """
+        #assert mode == 1
+
+        K = len(decomposer.X)
+        rank = decomposer.rank
+        X = decomposer.X
+
+        self.mode = 1
+        self.X = decomposer.X
+
+        self._cache['rho'] = [np.inf]*K
+
+        self.blueprint_B = np.random.uniform(size=(rank, rank))
+        self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(K)]
+        self.reg_Bks = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables_reg = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables_pf2 = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+
+
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
+            self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
+        else:
+            auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
+
+        if 'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
+            self.projection_matrices = auxiliary_variables[1]['projection_matrices']
+        else:
+            auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+        auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
+        auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
+        auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
+
+    def update_smoothness_proxes(self):
+        if self.l2_similarity is None:
+            return
+
+        if sparse.issparse(self.l2_similarity):
+            I = sparse.eye(self.l2_similarity.shape[0])
+        else:
+            I = np.identity(self.l2_similarity.shape[0])
+        reg_matrices = [self.l2_similarity + 0.5*rho*I for rho in self._cache['rho']]
+
+        self._cache['l2_reg_solvers'] = [
+            _SmartSymmetricPDSolver(reg_matrix, method=self.l2_solve_method)
+            for reg_matrix in reg_matrices
+        ]
+
+    def update_decomposition(
+        self, decomposition, auxiliary_variables
+    ):
+        self._cache = {}
+        self.recompute_normal_equation(decomposition)
+        self.set_rhos(decomposition)
+        self.recompute_cholesky_cache(decomposition)
+        self.update_smoothness_proxes()
+        # breakpoint()
+        # The decomposition is modified inplace each iteration
+        for i in range(self.max_it):
+            # Update Bks and Pks
+            # Update blueprint
+            # Update reg matrices
+            # Update duals
+            # print("unconstrained:", np.linalg.norm(decomposition.B[0], axis=0))
+            self.update_unconstrained(decomposition)
+            # print("unconstrained:", np.linalg.norm(decomposition.B[0], axis=0))
+
+            self.update_projections(decomposition)
+
+            # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
+            self.update_blueprint(decomposition)
+            # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
+
+            # print("reg", np.linalg.norm(self.reg_Bks[0], axis=0))
+            self.update_reg_factors(decomposition)
+            # print("reg", np.linalg.norm(self.reg_Bks[0], axis=0))
+
+            # print("dual reg", np.linalg.norm(self.dual_variables_reg[0], axis=0))
+            # print("dual pf2", np.linalg.norm(self.dual_variables_pf2[0], axis=0))
+            self.update_duals(decomposition)
+            # print("dual reg", np.linalg.norm(self.dual_variables_reg[0], axis=0))
+            # print("dual pf2", np.linalg.norm(self.dual_variables_pf2[0], axis=0))
+
+            if self.has_converged(decomposition):
+                break
+
+        self.num_its = i
+
+    def recompute_normal_equation(self, decomposition):
+        K = decomposition.C.shape[0]
+        self._cache['normal_eq_rhs'] = [None for _ in range(K)]
+        self._cache['normal_eq_lhs'] = [None for _ in range(K)]
+        for k in range(K):
+            ADk = decomposition.A*decomposition.C[k, np.newaxis]
+            self._cache['normal_eq_rhs'][k] = self.X[k].T@ADk
+            self._cache['normal_eq_lhs'][k] = ADk.T@ADk
+
+    def set_rhos(self, decomposition):
+        from tenkit import base
+        if not self.auto_rho:
+            self._cache['rho'] = [self.rho for _ in decomposition.B]
+        else:
+            normal_eq_lhs = self._cache['normal_eq_lhs']
+            self._cache['rho'] = [self.auto_rho_scaling*np.trace(lhs)/decomposition.rank for lhs in normal_eq_lhs]
+            self._cache['pf2_rho'] = np.sum(self._cache['rho'])
+
+    def recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        rhos = self._cache['rho']
+        pf2_rho = self._cache['pf2_rho']
+        normal_eq_lhs = self._cache['normal_eq_lhs']
+        I = np.eye(decomposition.rank)
+        self._cache['choleskys'] = [sla.cho_factor(lhs + (0.5*rho + 0.5*pf2_rho + self.ridge_penalty)*I) for rho, lhs in zip(rhos, normal_eq_lhs)]
+
+    def update_unconstrained(self, decomposition):
+        K = decomposition.C.shape[0]
+        blueprint_B = self.blueprint_B  # DeltaB
+
+        for k in range(K):
+            rhs = self._cache['normal_eq_rhs'][k]  # X{kk}
+            chol_lhs = self._cache['choleskys'][k]  # L{kk}
+            rho = self._cache['rho'][k]  # rho(kk)
+            pf2_rho = self._cache['pf2_rho']
+            
+            P = self.projection_matrices[k]  # P{kk}
+            reg_Bk = self.reg_Bks[k]  # ZB{kk}
+            dual_variables_reg = self.dual_variables_reg[k]  # mu_B_Z{kk}
+            dual_variables_pf2 = self.dual_variables_pf2[k]  # mu_DeltaB[kk]
+
+            prox_rhs = rhs + 0.5*rho*(reg_Bk - dual_variables_reg) + 0.5*pf2_rho*(P@blueprint_B - dual_variables_pf2)
+            decomposition.B[k][...] = sla.cho_solve(chol_lhs, prox_rhs.T).T
+
+    def update_projections(self, decomposition):
+        self.previous_projections = [pk for pk in self.projection_matrices]
+        K = decomposition.C.shape[0]
+        blueprint_B = self.blueprint_B  # DeltaB
+        for k in range(K):
+            Bk = decomposition.B[k]
+            dual_variable_pf2_k = self.dual_variables_pf2[k]
+            
+            U, s, Vh = np.linalg.svd((Bk + dual_variable_pf2_k)@blueprint_B.T, full_matrices=False)
+            self.projection_matrices[k] = U@Vh
+
+    def update_blueprint(self, decomposition):
+        self.previous_blueprint_B = self.blueprint_B
+        K = decomposition.C.shape[0]
+        involved_variables = zip(self.projection_matrices, decomposition.B, self.dual_variables_pf2)
+        self.blueprint_B[:] = sum(Pk.T@(Bk + dual_pf2_k) for Pk, Bk, dual_pf2_k in involved_variables)/K
+    
+    def update_reg_factors(self, decomposition):
+        self.previous_reg_Bks = [bk for bk in self.reg_Bks]
+        Bks = decomposition.B
+        dual_vars = self.dual_variables_reg
+        self.reg_Bks = [self.prox(Bk + dual_var_reg, k) for k, (Bk, dual_var_reg) in enumerate(zip(Bks, dual_vars))]
+    
+    def prox(self, factor_matrix, k):
+        # TODO: Comments
+        # TODO: Check compatibility between different proxes
+        # The above todo is not necessary if we implement a separate prox-class.
+        rho = self._cache['rho'][k]
+        if self.non_negativity and self.l1_penalty:
+            return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
+        elif self.l1_penalty:
+            return np.sign(factor_matrix)*np.maximum(np.abs(factor_matrix) - 2*self.l1_penalty/rho, 0)
+        elif self.tv_penalty:
+            return tv_denoise_matrix(factor_matrix.T, self.tv_penalty/rho).T
+            return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
+            raise NotImplementedError
+            #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
+        elif self.non_negativity:
+            return np.maximum(factor_matrix, 0)      
+        elif self.l2_similarity is not None:
+            # Solve (2L + rho I)x = y -> (L + 0.5*rho I)x = 0.5*rho*y
+            reg_solver = self._cache['l2_reg_solvers'][k]
+            rhs = 0.5*rho*factor_matrix
+            return reg_solver.solve(rhs)
+        else:
+            return factor_matrix
+    
+    def update_duals(self, decomposition):
+        K = decomposition.C.shape[0]
+        for k in range(K):
+            self.dual_variables_reg[k] += decomposition.B[k] - self.reg_Bks[k]
+            self.dual_variables_pf2[k] += decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B
+
+    def has_converged(self, decomposition):       
+        K = decomposition.C.shape[0]
+        
+        relative_reg_coupling_error = 0
+        relative_pf2_coupling_error = 0
+
+        relative_reg_change = 0
+        relative_pf2_change = 0
+
+        for k in range(K):
+            relative_reg_coupling_error += (
+                np.linalg.norm(decomposition.B[k] - self.reg_Bks[k])
+                /(np.linalg.norm(decomposition.B[k]) * K)
+            )
+            relative_pf2_coupling_error += (
+                np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)
+                /(np.linalg.norm(decomposition.B[k]) * K)
+            )
+            #sum_factor += np.linalg.norm(decomposition.B[k])
+
+            relative_reg_change += (
+                np.linalg.norm(self.previous_reg_Bks[k] - self.reg_Bks[k])
+                /(np.linalg.norm(self.dual_variables_reg[k]) * K)
+            )
+            #sum_dual_reg += np.linalg.norm(self.dual_variables_reg)
+
+            previous_pf2_Bks = self.previous_projections[k]@self.previous_blueprint_B
+            pf2_Bk = self.projection_matrices[k]@self.blueprint_B
+            relative_pf2_change += (
+                np.linalg.norm(previous_pf2_Bks - pf2_Bk)
+                /(np.linalg.norm(self.dual_variables_pf2[k]) * K)
+            )
+            #sum_dual_pf2 += np.linalg.norm(self.dual_variables_pf2)
+
+        #relative_reg_change /= (sum_dual_reg + 1e-16)/K
+        #relative_pf2_change /= (sum_dual_pf2 + 1e-16)/K
+        relative_change_criterion = max(relative_pf2_change, relative_reg_change)
+
+        #relative_reg_coupling_error = reg_coupling_error/sum_factor/K
+        #relative_pf2_coupling_error = pf2_coupling_error/sum_factor/K
+        relative_coupling_criterion = max(relative_pf2_coupling_error, relative_reg_coupling_error)
+
+
+        return relative_change_criterion < self.tol and relative_coupling_criterion < self.tol
+
+    def get_coupling_errors(self, decomposition):
+        K = len(self.projection_matrices)
+        pf2_coupling_error = 0
+        reg_coupling_error = 0
+        for k in range(K):
+            pf2_Bk = self.projection_matrices[k]@self.blueprint_B
+            
+            pf2_coupling_error += np.linalg.norm(pf2_Bk - decomposition.B[k])/np.linalg.norm(decomposition.B[k])
+            reg_coupling_error += np.linalg.norm(self.reg_Bks[k] - decomposition.B[k])/np.linalg.norm(decomposition.B[k])
+
+        return reg_coupling_error, pf2_coupling_error
+
+    def regulariser(self, decomposition):
+        regulariser = 0
+        if self.l2_similarity is not None:
+            B = decomposition.B
+            W = self.l2_similarity
+            rank = decomposition.rank
+            K = decomposition.C.shape[0]
+            regulariser += sum(
+                np.trace(B[k].T@W@B[k]) 
+                for k in range(K) 
+            )
+
+        if self.tv_penalty is not None:
+            for factor in decomposition.B:
+                regulariser += TotalVariationProx(factor, self.tv_penalty).center_penalty()
+
+        if self.ridge_penalty is not None:
+            B = decomposition.B
+            regulariser += sum(np.linalg.norm(Bk)**2 for Bk in B)
+
+        return regulariser
+
+
 class DoubleSplittingParafac2_WITHOUTPARAFAC2_ADMM(BaseSubProblem):
     def __init__(
         self,
@@ -1392,6 +1712,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         num_projection_its=5,
         max_nnls_its=100,
         non_negativity=True,
+        l2_penalty=None
     ):
         assert mu_increase > 1
         assert max_mu > 0
@@ -1403,6 +1724,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.num_projection_its = num_projection_its
         self.max_nnls_its = max_nnls_its
         self.non_negativity = non_negativity
+        self.l2_penalty = l2_penalty
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -1478,6 +1800,9 @@ class FlexibleCouplingParafac2(BaseSubProblem):
 
             if self.non_negativity:
                 decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+            elif self.l2_penalty is not None:
+                raise NotImplementedError
+                decomposition.B[k][:] = sla.solve_sylvester()
             else:
                 # || (ADk) B^T - Xk ||^2 + µ ||Bk^T - (PkB)^T||^2
                 # B (ADk)^T (ADk) B^T - 2 B (ADk)^T Xk + µ Bk Bk^T - 2µ Bk (PkB)^T

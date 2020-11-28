@@ -783,6 +783,8 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         verbose=False,
         l2_solve_method=None,
         use_preinit=False,
+
+        rho_reduction=np.sum
     ):
         if rho is None:
             self.auto_rho = True
@@ -805,6 +807,7 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         self.l2_solve_method = l2_solve_method
 
         self.use_preinit = use_preinit
+        self.rho_reduction = rho_reduction
 
         self._cache = {}
 
@@ -924,7 +927,7 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         else:
             normal_eq_lhs = self._cache['normal_eq_lhs']
             self._cache['rho'] = [self.auto_rho_scaling*np.trace(lhs)/decomposition.rank for lhs in normal_eq_lhs]
-            self._cache['pf2_rho'] = np.sum(self._cache['rho'])
+            self._cache['pf2_rho'] = self.rho_reduction(self._cache['rho'])
 
     def recompute_cholesky_cache(self, decomposition):
         # Prepare to compute choleskys

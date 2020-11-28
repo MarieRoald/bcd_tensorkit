@@ -38,7 +38,7 @@ L1_PENALTY = float(sys.argv[1]) #0.001
 RIDGE_PENALTY = float(sys.argv[2])
 
 OUTPUT_PATH = Path(
-    f"201127_noise_{NOISE_LEVEL}_20_200_40_SPARSEB-{L1_PENALTY}_RIDGE_{RIDGE_PENALTY}".replace(".", "-")
+    f"201127_noise_{NOISE_LEVEL}_20_200_40_on-off_SPARSEB-{L1_PENALTY}_RIDGE_{RIDGE_PENALTY}".replace(".", "-")
 )
 DECOMPOSITION_FOLDER = OUTPUT_PATH/"decompositions"
 DECOMPOSITION_FOLDER.mkdir(exist_ok=True, parents=True)
@@ -58,17 +58,18 @@ def truncated_laplace(size, rng):
     factor[factor < 0] = 0
     return factor
 
-def sparse_absolute_normal_factor(J, rank, min_nodes, max_nodes, rng):
+def sparse_factor(J, rank, min_nodes, max_nodes, rng):
     factor = np.zeros((J, rank))
     for r in range(rank):
         num_nodes = rng.randint(min_nodes, max_nodes+1)
         node_indices = rng.permutation(J)[:num_nodes]
-        factor[node_indices, r] = rng.uniform(size=num_nodes)
+        factor[node_indices, r] = 1 + rng.standard_normal(size=num_nodes)*0.2
+    factor[factor < 0] = 0
     return factor
     
 def generate_component(I, J, K, rank, rng):
     A = truncated_normal((I, rank), rng)
-    blueprint_B = sparse_absolute_normal_factor(
+    blueprint_B = sparse_factor(
         J, rank, min_nodes=MIN_NODES, max_nodes=MAX_NODES, rng=rng
     )
     B = [np.roll(blueprint_B, i, axis=0) for i in range(K)]

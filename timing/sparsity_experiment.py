@@ -15,7 +15,7 @@ TENSOR_PATH = "evolving_tensor"
 H5_GROUPS = ["dataset"]
 SLICES_PATH = "dataset/tensor"
 
-NOISE_LEVEL = 0.5
+NOISE_LEVEL = 0.33
 NUM_DATASETS = 50
 
 INNER_TOL = 1e-3
@@ -71,7 +71,7 @@ def generate_component(I, J, K, rank, rng):
     blueprint_B = sparse_absolute_normal_factor(
         J, rank, min_nodes=MIN_NODES, max_nodes=MAX_NODES, rng=rng
     )
-    B = [np.roll(blueprint_B, i) for i in range(K)]
+    B = [np.roll(blueprint_B, i, axis=0) for i in range(K)]
     C = rng.uniform(0.1, 1.1, size=(K, rank))
 
     return tenkit.decomposition.EvolvingTensor(A, B, C)

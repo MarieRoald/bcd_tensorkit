@@ -1,3 +1,5 @@
+import sys
+
 import h5py
 import json
 from pathlib import Path
@@ -9,20 +11,12 @@ from block_tenkit_admm import double_splitting_parafac2, block_parafac2
 from tqdm import trange
 
 
-OUTPUT_PATH = Path("201120_noise_05_20_30_40_RIDGE-0-01")
-DECOMPOSITION_FOLDER = OUTPUT_PATH/"decompositions"
-DECOMPOSITION_FOLDER.mkdir(exist_ok=True, parents=True)
-RESULTS_FOLDER = OUTPUT_PATH/"results"
-RESULTS_FOLDER.mkdir(exist_ok=True, parents=True)
-CHECKPOINTS_FOLDER = OUTPUT_PATH/"checkpoints"
-CHECKPOINTS_FOLDER.mkdir(exist_ok=True, parents=True)
-
 NOISE_PATH = "noise"
 TENSOR_PATH = "evolving_tensor"
 H5_GROUPS = ["dataset"]
 SLICES_PATH = "dataset/tensor"
 
-NOISE_LEVEL = 0
+NOISE_LEVEL = 0.33
 NUM_DATASETS = 50
 
 INNER_TOL = 1e-3
@@ -32,12 +26,25 @@ RELATIVE_TOLERANCE = 1e-10
 ABSOLUTE_TOLERANCE = 1e-10
 MAX_ITERATIONS = 1000
 
+MIN_NODES = 3
+MAX_NODES = 20
+
 I = 20
-J = 30
+J = 200
 K = 40
 RANK = 3
 
-RIDGE_PENALTY = 0.01
+RIDGE_PENALTY = float(sys.argv[1])
+
+OUTPUT_PATH = Path(
+    f"201127_noise_{NOISE_LEVEL}_20_200_40_RIDGE_{RIDGE_PENALTY}".replace(".", "-")
+)
+DECOMPOSITION_FOLDER = OUTPUT_PATH/"decompositions"
+DECOMPOSITION_FOLDER.mkdir(exist_ok=True, parents=True)
+RESULTS_FOLDER = OUTPUT_PATH/"results"
+RESULTS_FOLDER.mkdir(exist_ok=True, parents=True)
+CHECKPOINTS_FOLDER = OUTPUT_PATH/"checkpoints"
+CHECKPOINTS_FOLDER.mkdir(exist_ok=True, parents=True)
 
 def truncated_normal(size, rng):
     factor = rng.standard_normal(size)
@@ -127,6 +134,45 @@ def run_double_experiment(dataset_num, X, rank):
     )
     pf2.fit(X)
     return pf2
+
+def run_double_rho_sum_experiment(dataset_num, X, rank):
+    loggers = create_loggers(dataset_num)
+    pf2 = double_splitting_parafac2.BlockEvolvingTensor(
+        rank,
+        sub_problems=[
+            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.DoubleSplittingParafac2ADMM_SeparatePF2Rho(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL, rho_reduction=np.sum),
+            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+        ],
+        convergence_tol=RELATIVE_TOLERANCE,
+        absolute_tol=ABSOLUTE_TOLERANCE,
+        loggers=loggers,
+        max_its=MAX_ITERATIONS,
+        checkpoint_path=CHECKPOINTS_FOLDER/f"double_split_rho_sum_{dataset_num:03d}.h5",
+        checkpoint_frequency=2000,
+    )
+    pf2.fit(X)
+    return pf2
+    
+def run_double_rho_max_experiment(dataset_num, X, rank):
+    loggers = create_loggers(dataset_num)
+    pf2 = double_splitting_parafac2.BlockEvolvingTensor(
+        rank,
+        sub_problems=[
+            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.DoubleSplittingParafac2ADMM_SeparatePF2Rho(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL, rho_reduction=np.max),
+            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+        ],
+        convergence_tol=RELATIVE_TOLERANCE,
+        absolute_tol=ABSOLUTE_TOLERANCE,
+        loggers=loggers,
+        max_its=MAX_ITERATIONS,
+        checkpoint_path=CHECKPOINTS_FOLDER/f"double_split_rho_max_{dataset_num:03d}.h5",
+        checkpoint_frequency=2000,
+    )
+    pf2.fit(X)
+    return pf2
+    
     
 def run_flexible_experiment(dataset_num, X, rank):
     loggers = create_loggers(dataset_num)
@@ -217,6 +263,7 @@ def store_results(dataset_num, prefix, decomposer):
         json.dump(results, f)
 
 def run_experiment(dataset_num):
+    np.random.seed(0)
     rng = np.random.RandomState(dataset_num)
     decomposition = generate_component(I, J, K, RANK, rng)
     noise = generate_noise(I, J, K, rng)
@@ -227,6 +274,12 @@ def run_experiment(dataset_num):
 
     double_pf2 = run_double_experiment(dataset_num, noisy_X, RANK)
     store_results(dataset_num, "double_split", double_pf2)
+
+    double_sum_pf2 = run_double_rho_sum_experiment(dataset_num, noisy_X, RANK)
+    store_results(dataset_num, "double_rho_sum_split", double_sum_pf2)
+
+    double_max_pf2 = run_double_rho_max_experiment(dataset_num, noisy_X, RANK)
+    store_results(dataset_num, "double_rho_max_split", double_max_pf2)
 
     #flexible_pf2 = run_flexible_experiment(dataset_num, noisy_X, RANK)
     #store_results(dataset_num, "flexible_coupling", flexible_pf2)
@@ -256,6 +309,8 @@ def run_experiment_on_existing_data(dataset_num):
 
 if __name__ == "__main__":
     np.random.seed(0)
+    from joblib import delayed, Parallel
+    Parallel(n_jobs=-1)(delayed(run_experiment)(i) for i in range(NUM_DATASETS))
     copy("timing_experiment.py", OUTPUT_PATH/"timing_experiment.py")    
-    for dataset_num in trange(NUM_DATASETS):
-        run_experiment(dataset_num)
+    #for dataset_num in trange(NUM_DATASETS):
+        #run_experiment(dataset_num)

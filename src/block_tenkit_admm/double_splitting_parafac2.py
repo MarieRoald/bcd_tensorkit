@@ -463,6 +463,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         verbose=False,
         l2_solve_method=None,
         use_preinit=False,
+        scad_penalty=None,
 
         pf2_coupling_scale=1
     ):
@@ -488,6 +489,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.l2_solve_method = l2_solve_method
 
         self.use_preinit = use_preinit
+        self.scad_penalty = scad_penalty
 
         self._cache = {}
 
@@ -647,8 +649,9 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
     def update_blueprint(self, decomposition):
         self.previous_blueprint_B = self.blueprint_B
         K = decomposition.C.shape[0]
-        involved_variables = zip(self.projection_matrices, decomposition.B, self.dual_variables_pf2)
-        self.blueprint_B[:] = sum(Pk.T@(Bk + dual_pf2_k) for Pk, Bk, dual_pf2_k in involved_variables)/K
+        rho = self._cache['rho']
+        involved_variables = zip(rho, self.projection_matrices, decomposition.B, self.dual_variables_pf2)
+        self.blueprint_B[:] = sum(rho_k * Pk.T@(Bk + dual_pf2_k) for rho_k, Pk, Bk, dual_pf2_k in involved_variables)/np.sum(rho)
     
     def update_reg_factors(self, decomposition):
         self.previous_reg_Bks = [bk for bk in self.reg_Bks]
@@ -677,6 +680,23 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             reg_solver = self._cache['l2_reg_solvers'][k]
             rhs = 0.5*rho*factor_matrix
             return reg_solver.solve(rhs)
+        elif self.scad_penalty is not None:
+            raise NotImplementedError
+            a = self.scad_parameter*self.scad_penalty
+            soft_threshold_mask = factor_matrix < 2*self.scad_penalty
+            intermediate_mask = factor_matrix < a*self.scad_penalty
+            out = factor_matrix.copy()
+
+            intermediate_sel = factor_matrix[intermediate_mask]
+            out[intermediate_mask] = (
+                ((a - 1)*intermediate_sel - np.sign(intermediate_sel)*a*self.scad_penalty)
+                /(a - 2)
+            )
+            soft_threshold_sel = factor_matrix[soft_threshold_mask]
+            # NOT FINISHED HERE:
+            out[soft_threshold_mask] = (
+                np.sign(soft_threshold_sel)*np.maximum()
+            )
         else:
             return factor_matrix
     
@@ -783,6 +803,8 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         verbose=False,
         l2_solve_method=None,
         use_preinit=False,
+
+        rho_reduction=np.sum
     ):
         if rho is None:
             self.auto_rho = True
@@ -805,6 +827,7 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         self.l2_solve_method = l2_solve_method
 
         self.use_preinit = use_preinit
+        self.rho_reduction = rho_reduction
 
         self._cache = {}
 
@@ -924,7 +947,7 @@ class DoubleSplittingParafac2ADMM_SeparatePF2Rho(BaseSubProblem):
         else:
             normal_eq_lhs = self._cache['normal_eq_lhs']
             self._cache['rho'] = [self.auto_rho_scaling*np.trace(lhs)/decomposition.rank for lhs in normal_eq_lhs]
-            self._cache['pf2_rho'] = np.sum(self._cache['rho'])
+            self._cache['pf2_rho'] = self.rho_reduction(self._cache['rho'])
 
     def recompute_cholesky_cache(self, decomposition):
         # Prepare to compute choleskys

@@ -1765,7 +1765,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             slice_wise_sse = [np.linalg.norm(self.X[k] - decomposition.construct_slice(k))**2 for k in range(self.K)]
             # mu[k] = 0.1 * ||X[k] - AD[k]B[k]^T||^2 / ||B[k]||^2
             self.mu[:] = [slice_wise_sse[k]/(10*np.linalg.norm(decomposition.B[k])**2) for k in range(self.K)]
-        elif self.current_iteration ==1:
+        elif self.current_iteration == 1:
             slice_wise_sse = [np.linalg.norm(self.X[k] - decomposition.construct_slice(k))**2 for k in range(self.K)]
             coupling_error = [np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)**2 for k in range(self.K)]
             self.mu[:] = [slice_wise_sse[k] / (self.mu[k]*coupling_error[k]) for k in range(self.K)]
@@ -1801,8 +1801,19 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             if self.non_negativity:
                 decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
             elif self.l2_penalty is not None:
-                raise NotImplementedError
-                decomposition.B[k][:] = sla.solve_sylvester()
+                #raise NotImplementedError
+                # || (ADk) Bk^T - Xk ||^2 + µ ||Bk^T - (PkB)^T||^2 + <Bk, W Bk>
+                # Notation: <X, Y> = Tr(X^TY)
+                # <(ADk) Bk^T, (ADk) Bk^T> - 2 <(ADk) Bk^T, Xk> + µ<Bk^T, Bk^T> - 2 µ <Bk^T, (PkB)^T> + <Bk, W Bk>
+                # Differentiate wrt Bk^T and set equal to zero
+                # 2 (ADk)^T (ADk) Bk^T - 2 (ADk)^T Xk + 2µ Bk^T - 2µ(PkB)^T + 2 Bk^T W = 0
+                # ((ADk)^T (ADk)k + µI) Bk^T + Bk^T W = (ADk)^T Xk + µ(PkB)^T
+                # Sylvester equation: AX + XB = Q
+                # X = Bk^T, A = ((ADk)^T (ADk)k + µI), B = L, Q = (ADk)^T Xk + µ(PkB)^T
+                A = ADk.T @ ADk + self.mu[k] * np.eye(ADk.shape[1])
+                B = self.l2_penalty
+                Q = ADk.T @ self.X[k] + self.mu[k] * PkB.T
+                decomposition.B[k][:] = sla.solve_sylvester(A, B, Q).T
             else:
                 # || (ADk) B^T - Xk ||^2 + µ ||Bk^T - (PkB)^T||^2
                 # B (ADk)^T (ADk) B^T - 2 B (ADk)^T Xk + µ Bk Bk^T - 2µ Bk (PkB)^T

@@ -701,6 +701,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             out[soft_threshold_mask] = (
                 np.sign(st_sel)*np.maximum(np.abs(st_sel) - self.scad_penalty, 0)
             )
+            return factor_matrix
         else:
             return factor_matrix
     

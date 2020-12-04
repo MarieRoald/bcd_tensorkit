@@ -15,8 +15,8 @@ TENSOR_PATH = "evolving_tensor"
 H5_GROUPS = ["dataset"]
 SLICES_PATH = "dataset/tensor"
 
-NOISE_LEVEL = 1
-NUM_DATASETS = 10
+NOISE_LEVEL = float(sys.argv[3])
+NUM_DATASETS = 50
 
 INNER_TOL = 1e-3
 INNER_SUB_ITS = 5
@@ -37,7 +37,7 @@ SPARSE_PENALTY = float(sys.argv[1]) #0.001
 RIDGE_PENALTY = float(sys.argv[2])
 
 OUTPUT_PATH = Path(
-    f"201202_noise_{NOISE_LEVEL}_20_200_40_on-off_SPARSEB-{SPARSE_PENALTY}_RIDGE_{RIDGE_PENALTY}".replace(".", "-")
+    f"201202_noise_{NOISE_LEVEL}_{I}_{J}_{K}_rank{RANK}_on-off_SPARSEB-{SPARSE_PENALTY}_RIDGE-ABC_{RIDGE_PENALTY}".replace(".", "-")
 )
 DECOMPOSITION_FOLDER = OUTPUT_PATH/"decompositions"
 DECOMPOSITION_FOLDER.mkdir(exist_ok=True, parents=True)
@@ -46,6 +46,13 @@ RESULTS_FOLDER.mkdir(exist_ok=True, parents=True)
 CHECKPOINTS_FOLDER = OUTPUT_PATH/"checkpoints"
 CHECKPOINTS_FOLDER.mkdir(exist_ok=True, parents=True)
 
+RUN_ALS = (sys.argv[4].lower() == "als")
+
+print("Experiment with")
+print(f"  noise level: {NOISE_LEVEL}")
+print(f"  sparsity level: {SPARSE_PENALTY}")
+print(f"  ridge level: {RIDGE_PENALTY}")
+print(f"  als baseline: {RUN_ALS}")
 
 def truncated_normal(size, rng):
     factor = rng.standard_normal(size)
@@ -132,8 +139,8 @@ def run_l1_experiment(dataset_num, X, rank):
     pf2 = double_splitting_parafac2.BlockEvolvingTensor(
         rank,
         sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.DoubleSplittingParafac2ADMM(l1_penalty=SPARSE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=False, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.DoubleSplittingParafac2ADMM(ridge_penalty=RIDGE_PENALTY, l1_penalty=SPARSE_PENALTY, non_negativity=False, max_it=INNER_SUB_ITS, tol=INNER_TOL),
             double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
         ],
         convergence_tol=RELATIVE_TOLERANCE,
@@ -151,8 +158,8 @@ def run_scad_experiment(dataset_num, X, rank):
     pf2 = double_splitting_parafac2.BlockEvolvingTensor(
         rank,
         sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.DoubleSplittingParafac2ADMM(scad_penalty=SPARSE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=False, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.DoubleSplittingParafac2ADMM(ridge_penalty=RIDGE_PENALTY, scad_penalty=SPARSE_PENALTY, non_negativity=False, max_it=INNER_SUB_ITS, tol=INNER_TOL),
             double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
         ],
         convergence_tol=RELATIVE_TOLERANCE,
@@ -169,11 +176,13 @@ def run_als_experiment(dataset_num, X, rank):
     loggers = create_loggers(dataset_num)
     pf2 = tenkit.decomposition.Parafac2_ALS(
         rank,
+        non_negativity_constraints=[False, False, True],
         convergence_tol=RELATIVE_TOLERANCE,
         loggers=list(loggers.values()),
         max_its=MAX_ITERATIONS,
         checkpoint_path=CHECKPOINTS_FOLDER/f"als_{dataset_num:03d}.h5",
         checkpoint_frequency=2000,
+        print_frequency=-1
     )
     pf2.fit(X)
     return pf2
@@ -220,18 +229,22 @@ def run_experiment(dataset_num):
     X = decomposition.construct_tensor()
     noisy_X = add_noise(X, noise, NOISE_LEVEL)
 
-    pf2_l1 = run_l1_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "l1", pf2_l1)
+    if not RUN_ALS:
+        pf2_l1 = run_l1_experiment(dataset_num, noisy_X, RANK)
+        store_results(dataset_num, "l1", pf2_l1)
+    
+        pf2_scad = run_scad_experiment(dataset_num, noisy_X, RANK)
+        store_results(dataset_num, "scad", pf2_scad)
 
-    pf2_scad = run_scad_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "scad", pf2_scad)
-
-    pf2_als = run_als_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "als", pf2_als)
+    else:
+        pf2_als = run_als_experiment(dataset_num, noisy_X, RANK)
+        store_results(dataset_num, "als", pf2_als)
 
 
 
 if __name__ == "__main__":
     copy("sparsity_experiment.py", OUTPUT_PATH/"timing_experiment.py")    
-    for dataset_num in trange(NUM_DATASETS):
-        run_experiment(dataset_num)
+    #for i in range(NUM_DATASETS):
+    #    run_experiment(i)
+    from joblib import delayed, Parallel
+    Parallel(n_jobs=NUM_DATASETS)(delayed(run_experiment)(i) for i in range(NUM_DATASETS))

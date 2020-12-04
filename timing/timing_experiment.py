@@ -16,7 +16,7 @@ TENSOR_PATH = "evolving_tensor"
 H5_GROUPS = ["dataset"]
 SLICES_PATH = "dataset/tensor"
 
-NOISE_LEVEL = 0.33
+NOISE_LEVEL = float(sys.argv[1])
 NUM_DATASETS = 50
 
 INNER_TOL = 1e-3
@@ -30,14 +30,12 @@ MIN_NODES = 3
 MAX_NODES = 20
 
 I = 20
-J = 200
-K = 40
+J = 30
+K = 20
 RANK = 3
 
-RIDGE_PENALTY = float(sys.argv[1])
-
 OUTPUT_PATH = Path(
-    f"201127_noise_{NOISE_LEVEL}_20_200_40_RIDGE_{RIDGE_PENALTY}".replace(".", "-")
+    f"201204_noise_{NOISE_LEVEL}_{I}_{J}_{K}_NN".replace(".", "-")
 )
 DECOMPOSITION_FOLDER = OUTPUT_PATH/"decompositions"
 DECOMPOSITION_FOLDER.mkdir(exist_ok=True, parents=True)
@@ -54,7 +52,7 @@ def truncated_normal(size, rng):
 def generate_component(I, J, K, rank, rng):
     A = truncated_normal((I, rank), rng)
     blueprint_B = truncated_normal((J, rank), rng)
-    B = [np.roll(blueprint_B, i) for i in range(K)]
+    B = [np.roll(blueprint_B, i, axis=0) for i in range(K)]
     C = rng.uniform(0.1, 1.1, size=(K, rank))
 
     return tenkit.decomposition.EvolvingTensor(A, B, C)
@@ -80,112 +78,82 @@ def add_noise(X, noise, noise_level):
 
 def create_loggers(dataset_num):
     dataset_filename = get_dataset_filename(dataset_num)
-    loss_logger = tenkit.decomposition.logging.LossLogger()
-    explained_variance_logger = tenkit.decomposition.logging.ExplainedVarianceLogger()
-    relative_sse_logger = tenkit.decomposition.logging.RelativeSSELogger()
-    sse_logger = tenkit.decomposition.logging.SSELogger()
-    fms_logger = tenkit.decomposition.logging.EvolvingTensorFMSLogger(dataset_filename, "evolving_tensor")
-    fmsA_logger = tenkit.decomposition.logging.EvolvingTensorFMSALogger(dataset_filename, "evolving_tensor")
-    fmsB_logger = tenkit.decomposition.logging.EvolvingTensorFMSBLogger(dataset_filename, "evolving_tensor")
-    fmsC_logger = tenkit.decomposition.logging.EvolvingTensorFMSCLogger(dataset_filename, "evolving_tensor")
-    time_logger = tenkit.decomposition.logging.Timer()
-    coupling_error_logger = tenkit.decomposition.logging.CouplingErrorLogger()
-    rhoA_logger = tenkit.decomposition.logging.Parafac2RhoALogger()
-    rhoB_logger = tenkit.decomposition.logging.Parafac2RhoBLogger()
-    rhoC_logger = tenkit.decomposition.logging.Parafac2RhoCLogger()
-    num_subits_logger_A = tenkit.decomposition.logging.NumSubIterationsLogger(0)
-    num_subits_logger_B = tenkit.decomposition.logging.NumSubIterationsLogger(1)
-    num_subits_logger_C = tenkit.decomposition.logging.NumSubIterationsLogger(2)
-
-    return [
-        loss_logger,
-        explained_variance_logger,
-        relative_sse_logger,
-        sse_logger,
-        fms_logger,
-        fmsA_logger,
-        fmsB_logger,
-        fmsC_logger,
-        coupling_error_logger,
-        time_logger,
-        rhoA_logger,
-        rhoB_logger,
-        rhoC_logger,
-        num_subits_logger_A,
-        num_subits_logger_B,
-        num_subits_logger_C,
-    ]
+    return {
+        "Loss": tenkit.decomposition.logging.LossLogger(),
+        "Fit": tenkit.decomposition.logging.ExplainedVarianceLogger(),
+        "Relative SSE": tenkit.decomposition.logging.RelativeSSELogger(),
+        "SSE": tenkit.decomposition.logging.SSELogger(),
+        "FMS": tenkit.decomposition.logging.EvolvingTensorFMSLogger(dataset_filename, "evolving_tensor", fms_reduction="min"),
+        "FMS A": tenkit.decomposition.logging.EvolvingTensorFMSALogger(dataset_filename, "evolving_tensor", fms_reduction="min"),
+        "FMS B": tenkit.decomposition.logging.EvolvingTensorFMSBLogger(dataset_filename, "evolving_tensor", fms_reduction="min"),
+        "FMS C": tenkit.decomposition.logging.EvolvingTensorFMSCLogger(dataset_filename, "evolving_tensor", fms_reduction="min"),
+        "FMS (avg)": tenkit.decomposition.logging.EvolvingTensorFMSLogger(dataset_filename, "evolving_tensor", fms_reduction="mean"),
+        "FMS A (avg)": tenkit.decomposition.logging.EvolvingTensorFMSALogger(dataset_filename, "evolving_tensor", fms_reduction="mean"),
+        "FMS B (avg)": tenkit.decomposition.logging.EvolvingTensorFMSBLogger(dataset_filename, "evolving_tensor", fms_reduction="mean"),
+        "FMS C (avg)": tenkit.decomposition.logging.EvolvingTensorFMSCLogger(dataset_filename, "evolving_tensor", fms_reduction="mean"),
+        "Time": tenkit.decomposition.logging.Timer(),
+        "Coupling error": tenkit.decomposition.logging.CouplingErrorLogger(),
+        "Coupling error 0": tenkit.decomposition.logging.SingleCouplingErrorLogger(0),
+        "Coupling error 1": tenkit.decomposition.logging.SingleCouplingErrorLogger(1),
+        "Coupling error 2": tenkit.decomposition.logging.SingleCouplingErrorLogger(2),
+        "Coupling error 3": tenkit.decomposition.logging.SingleCouplingErrorLogger(3),
+        "Rho A": tenkit.decomposition.logging.Parafac2RhoALogger(),
+        "Rho B": tenkit.decomposition.logging.Parafac2RhoBLogger(),
+        "Rho C": tenkit.decomposition.logging.Parafac2RhoCLogger(),
+        "Num subiterations A": tenkit.decomposition.logging.NumSubIterationsLogger(0),
+        "Num subiterations B": tenkit.decomposition.logging.NumSubIterationsLogger(1),
+        "Num subiterations C": tenkit.decomposition.logging.NumSubIterationsLogger(2),
+        "Regulariser 0": tenkit.decomposition.logging.SingleModeRegularisationLogger(0),
+        "Regulariser 1": tenkit.decomposition.logging.SingleModeRegularisationLogger(1),
+        "Regulariser 2": tenkit.decomposition.logging.SingleModeRegularisationLogger(2),
+    }
 
 def run_double_experiment(dataset_num, X, rank):
     loggers = create_loggers(dataset_num)
     pf2 = double_splitting_parafac2.BlockEvolvingTensor(
         rank,
         sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.DoubleSplittingParafac2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.Mode0ADMM(non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.DoubleSplittingParafac2ADMM(non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.Mode2ADMM(non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
         ],
         convergence_tol=RELATIVE_TOLERANCE,
         absolute_tol=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
+        loggers=list(loggers.values()),
         max_its=MAX_ITERATIONS,
         checkpoint_path=CHECKPOINTS_FOLDER/f"double_split_{dataset_num:03d}.h5",
         checkpoint_frequency=2000,
     )
     pf2.fit(X)
     return pf2
-
-def run_double_rho_sum_experiment(dataset_num, X, rank):
+    
+def run_als_experiment(dataset_num, X, rank):
     loggers = create_loggers(dataset_num)
-    pf2 = double_splitting_parafac2.BlockEvolvingTensor(
+    pf2 = tenkit.decomposition.Parafac2_ALS(
         rank,
-        sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.DoubleSplittingParafac2ADMM_SeparatePF2Rho(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL, rho_reduction=np.sum),
-            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-        ],
+        non_negativity_constraints=[True, False, True],
         convergence_tol=RELATIVE_TOLERANCE,
-        absolute_tol=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
+        loggers=list(loggers.values()),
         max_its=MAX_ITERATIONS,
-        checkpoint_path=CHECKPOINTS_FOLDER/f"double_split_rho_sum_{dataset_num:03d}.h5",
+        checkpoint_path=CHECKPOINTS_FOLDER/f"als_{dataset_num:03d}.h5",
         checkpoint_frequency=2000,
+        print_frequency=-1
     )
     pf2.fit(X)
     return pf2
-    
-def run_double_rho_max_experiment(dataset_num, X, rank):
-    loggers = create_loggers(dataset_num)
-    pf2 = double_splitting_parafac2.BlockEvolvingTensor(
-        rank,
-        sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.DoubleSplittingParafac2ADMM_SeparatePF2Rho(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL, rho_reduction=np.max),
-            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-        ],
-        convergence_tol=RELATIVE_TOLERANCE,
-        absolute_tol=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
-        max_its=MAX_ITERATIONS,
-        checkpoint_path=CHECKPOINTS_FOLDER/f"double_split_rho_max_{dataset_num:03d}.h5",
-        checkpoint_frequency=2000,
-    )
-    pf2.fit(X)
-    return pf2
-    
-    
+     
 def run_flexible_experiment(dataset_num, X, rank):
     loggers = create_loggers(dataset_num)
     pf2 = double_splitting_parafac2.BlockEvolvingTensor(
         rank,
         sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.FlexibleCouplingParafac2(),
-            double_splitting_parafac2.Mode2ADMM(non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
+            double_splitting_parafac2.Mode0RLS(non_negativity=True),
+            double_splitting_parafac2.FlexibleCouplingParafac2(non_negativity=True),
+            double_splitting_parafac2.Mode2RLS(non_negativity=True),
         ],
         convergence_tol=RELATIVE_TOLERANCE,
         absolute_tol=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
+        loggers=list(loggers.values()),
         max_its=MAX_ITERATIONS,
         checkpoint_path=CHECKPOINTS_FOLDER/f"flexible_coupling_{dataset_num:03d}.h5",
         checkpoint_frequency=2000,
@@ -195,46 +163,12 @@ def run_flexible_experiment(dataset_num, X, rank):
     pf2.fit(X)
     return pf2
 
-def run_single_C_experiment(dataset_num, X, rank):
-    loggers = create_loggers(dataset_num)
-    pf2 = block_parafac2.BlockParafac2(
-        rank,
-        sub_problems=[
-            block_parafac2.ADMM(mode=0, ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            block_parafac2.Parafac2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
-            block_parafac2.ADMM(mode=2, ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-        ],
-        convergence_tol=RELATIVE_TOLERANCE,
-        absolute_tolerance=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
-        projection_update_frequency=1,
-        max_its=MAX_ITERATIONS,
-        checkpoint_path=CHECKPOINTS_FOLDER/f"single_split_C{dataset_num:03d}.h5",
-        checkpoint_frequency=2000,
-    )
-    pf2.fit(X)
-    return pf2
-
-def run_single_Dk_experiment(dataset_num, X, rank):
-    loggers = create_loggers(dataset_num)
-    pf2 = double_splitting_parafac2.BlockEvolvingTensor(
-        rank,
-        sub_problems=[
-            double_splitting_parafac2.Mode0ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.SingleSplittingParafac2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_it=INNER_SUB_ITS, tol=INNER_TOL),
-            double_splitting_parafac2.Mode2ADMM(ridge_penalty=RIDGE_PENALTY, non_negativity=True, max_its=INNER_SUB_ITS, tol=INNER_TOL),
-        ],
-        convergence_tol=RELATIVE_TOLERANCE,
-        absolute_tol=ABSOLUTE_TOLERANCE,
-        loggers=loggers,
-        max_its=MAX_ITERATIONS,
-        checkpoint_path=CHECKPOINTS_FOLDER/f"single_split_Dk{dataset_num:03d}.h5",
-        checkpoint_frequency=2000,
-    )
-    pf2.fit(X)
-    return pf2
-
 def generate_results(dataset_num, decomposer):
+    logger_names = create_loggers(dataset_num).keys()
+    logs = [logger.log_metrics for logger in decomposer.loggers]
+    results = dict(zip(logger_names, logs))
+    results['iteration'] = decomposer.loggers[0].log_iterations
+    return results
     loggers = decomposer.loggers
     results = {
         'iteration': loggers[0].log_iterations,
@@ -275,42 +209,15 @@ def run_experiment(dataset_num):
     double_pf2 = run_double_experiment(dataset_num, noisy_X, RANK)
     store_results(dataset_num, "double_split", double_pf2)
 
-    double_sum_pf2 = run_double_rho_sum_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "double_rho_sum_split", double_sum_pf2)
+    pf2 = run_als_experiment(dataset_num, noisy_X, RANK)
+    store_results(dataset_num, "als", pf2)
 
-    double_max_pf2 = run_double_rho_max_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "double_rho_max_split", double_max_pf2)
-
-    #flexible_pf2 = run_flexible_experiment(dataset_num, noisy_X, RANK)
-    #store_results(dataset_num, "flexible_coupling", flexible_pf2)
-
-    #single_C_pf2 = run_single_C_experiment(dataset_num, noisy_X, RANK)
-    #store_results(dataset_num, "single_split_C", single_C_pf2)
-
-    single_Dk_pf2 = run_single_Dk_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "single_split_Dk", single_Dk_pf2)
-
-def run_experiment_on_existing_data(dataset_num):
-    X = decomposition.construct_tensor()
-    noisy_X = add_noise(X, noise, NOISE_LEVEL)
-
-    double_pf2 = run_double_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "double_split", double_pf2)
-
-    #flexible_pf2 = run_flexible_experiment(dataset_num, noisy_X, RANK)
-    #store_results(dataset_num, "flexible_coupling", flexible_pf2)
-
-    #single_C_pf2 = run_single_C_experiment(dataset_num, noisy_X, RANK)
-    #store_results(dataset_num, "single_split_C", single_C_pf2)
-
-    single_Dk_pf2 = run_single_Dk_experiment(dataset_num, noisy_X, RANK)
-    store_results(dataset_num, "single_split_Dk", single_Dk_pf2)
+    flexible_pf2 = run_flexible_experiment(dataset_num, noisy_X, RANK)
+    store_results(dataset_num, "flexible_coupling", flexible_pf2)
 
 
 if __name__ == "__main__":
     np.random.seed(0)
-    from joblib import delayed, Parallel
-    Parallel(n_jobs=-1)(delayed(run_experiment)(i) for i in range(NUM_DATASETS))
     copy("timing_experiment.py", OUTPUT_PATH/"timing_experiment.py")    
-    #for dataset_num in trange(NUM_DATASETS):
-        #run_experiment(dataset_num)
+    for dataset_num in trange(NUM_DATASETS):
+        run_experiment(dataset_num)

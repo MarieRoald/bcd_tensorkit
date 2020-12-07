@@ -1,5 +1,11 @@
 # Block coordinate descent for coupled matrix decomposition
 
+## Installation instructions
+Currently, this code is dependent on experimental features of the TensorKit project. So you need to install the block_optimizer branch. I aim to merge this into master soon to make the installation process easier. For now, run the following two lines to install the correct versions of tensorkit and bcd_tensorkit.
+
+    pip install https://github.com/MarieRoald/TensorKit/archive/block_optimizer.zip
+    pip install git+https://github.com/MarieRoald/bcd_tensorkit.git
+
 ## Simple non-negativity example:
 ```python
 import tenkit

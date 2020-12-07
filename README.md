@@ -111,3 +111,84 @@ plt.show()
 ![png](readme_images/nn_estimated.png)
 
 
+## Accuracy comparison with the flexible coupling approach
+**Generating the components are done in the same way as the example code above.**
+```python
+import tenkit
+import bcd_tenkit
+import numpy as np
+import matplotlib.pyplot as plt
+
+I, J, K = 20, 30, 40
+rank = 3
+
+A = np.random.standard_normal(size=(I, rank))
+A = np.maximum(A, 0)
+
+C = np.random.uniform(size=(K, rank))+ 0.1
+
+blueprint_B = np.random.standard_normal(size=(J, rank))
+blueprint_B = np.maximum(blueprint_B, 0)
+B = np.empty(shape=(K, J, rank))
+for k in range(K):
+    B[k] = np.roll(blueprint_B, shift=k, axis=0)
+
+decomposition = tenkit.decomposition.CoupledMatrices(A, B, C)
+X = decomposition.construct_tensor()  # Create tensor whose last mode represent matrix number
+noisy_X = tenkit.utils.add_noise(X, 0.33)
+```
+
+**Fit a PARAFAC2 model using the AO-ADMM scheme**
+```python
+admm_logger = tenkit.decomposition.logging.CoupledMatricesFMSLogger(None, decomposition=decomposition)
+admm_decomposer = bcd_tenkit.BCDCoupledMatrixDecomposer(
+    rank,
+    sub_problems=[
+        bcd_tenkit.Mode0ADMM(non_negativity=True),
+        bcd_tenkit.DoubleSplittingParafac2ADMM(non_negativity=True),
+        bcd_tenkit.Mode2ADMM(non_negativity=True)
+    ],
+    max_its=1000,
+    convergence_tol=1e-8,
+    absolute_tol=1e-10,
+    loggers=[admm_logger]
+)
+
+admm_decomposer.fit(noisy_X)
+```
+
+**Fit a PARAFAC2 model using the flexible coupling scheme**
+```python
+flexible_logger = tenkit.decomposition.logging.CoupledMatricesFMSLogger(None, decomposition=decomposition)
+flexible_decomposer = bcd_tenkit.BCDCoupledMatrixDecomposer(
+    rank,
+    sub_problems=[
+        bcd_tenkit.Mode0RLS(non_negativity=True),
+        bcd_tenkit.FlexibleCouplingParafac2(non_negativity=True),
+        bcd_tenkit.Mode2RLS(non_negativity=True)
+    ],
+    max_its=1000,
+    convergence_tol=1e-8,
+    absolute_tol=1e-10,
+    loggers=[flexible_logger],
+    convergence_method='flex'
+)
+
+flexible_decomposer.fit(noisy_X)
+```
+
+**Plot the factor match score as a function of iteration number** (stacking all *B* component matrices on top of each other beforehand)
+```python
+plt.plot(flexible_logger.log_metrics, label="Flexible coupling")
+plt.plot(admm_logger.log_metrics, label="AO-ADMM")
+plt.legend()
+plt.title("True component recovery")
+plt.xlabel("Iteration")
+plt.ylabel("FMS")
+plt.xlim(0, 100)
+plt.show()
+```
+
+
+![Diagnostic plot that shows that AO-ADMM is faster than Flexible Coupling](readme_images/fms_plot.png)
+

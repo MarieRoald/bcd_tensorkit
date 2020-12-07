@@ -30,8 +30,8 @@ MIN_NODES = 3
 MAX_NODES = 20
 
 I = 20
-J = 30
-K = 20
+J = 200
+K = 40
 RANK = 3
 
 OUTPUT_PATH = Path(

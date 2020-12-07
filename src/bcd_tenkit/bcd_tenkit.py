@@ -21,7 +21,7 @@ from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
 __all__ = [
-    "BaseSubProblem", "Mode0RLS", "Mode0ADMM", "Mode2RLS", "ModeADMM",
+    "BaseSubProblem", "Mode0RLS", "Mode0ADMM", "Mode2RLS", "Mode2ADMM",
     "DoubleSplittingParafac2ADMM", "SingleSplittingParafac2ADMM", 
     "FlexibleCouplingParafac2", "BCDCoupledMatrixDecomposer"
 ]

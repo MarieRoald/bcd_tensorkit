@@ -20,6 +20,11 @@ from ._tv_prox import TotalVariationProx
 from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
+__all__ = [
+    "BaseSubProblem", "Mode0RLS", "Mode0ADMM", "Mode2RLS", "ModeADMM",
+    "DoubleSplittingParafac2ADMM", "SingleSplittingParafac2ADMM", 
+    "FlexibleCouplingParafac2", "BCDCoupledMatrixDecomposer"
+]
 
 class BaseSubProblem(ABC):
     def __init__(self):

@@ -196,7 +196,6 @@ class RLS(BaseSubProblem):
         return rightsolve
 
 
-
 class Mode2ADMM(BaseSubProblem):
     def __init__(self, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
@@ -310,7 +309,6 @@ class Mode2ADMM(BaseSubProblem):
         if self.verbose:
             print("primal criteria", coupling_error, "dual criteria", aux_change_sq)
         return coupling_error < self.tol and aux_change_criterion < self.tol
-
 
 
 class BaseParafac2SubProblem(BaseSubProblem):

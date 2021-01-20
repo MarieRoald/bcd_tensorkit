@@ -1348,7 +1348,8 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         convergence_check_frequency=1,
         absolute_tol=1e-16,
         problem_order=(1, 0, 2),
-        convergence_method="admm"
+        convergence_method="admm",
+        store_first_checkpoint=False
     ):
         super().__init__(
             max_its=max_its,
@@ -1366,6 +1367,7 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         self.absolute_tolerance = absolute_tol
         self.problem_order = problem_order
         self.convergence_method = convergence_method
+        self.store_first_checkpoint = store_first_checkpoint
 
     @property
     def regularisation_penalty(self):
@@ -1381,16 +1383,19 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         return self.SSE + self.regularisation_penalty
 
     def _fit(self):
-        if self.checkpoint_frequency > 0:
+        if self.checkpoint_frequency > 0 and self.store_first_checkpoint:
             # TODO: Consider to do this for tenkit too
             self.store_checkpoint()
-            
+
+
         for it in range(self.max_its - self.current_iteration):
             if self._has_converged():
                 break
+            if it == 0 and self.store_first_checkpoint:
+                for logger in self.loggers:
+                    logger.log(self)
 
             self._update_decomposition()
-            # TODO: _after_fit_cleanup()?
             self._after_fit_iteration()
 
             if self.current_iteration % self.print_frequency == 0 and self.print_frequency > 0:

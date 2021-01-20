@@ -18,6 +18,13 @@ from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
 
+# Initialisation method doesn't affect the results much
+# so we keep it uniform to have feasible init with NN constraints
+INIT_METHOD_A = 'uniform'
+INIT_METHOD_B = 'uniform'
+INIT_METHOD_C = 'uniform'
+
+
 class BaseSubProblem(ABC):
     def __init__(self):
         pass
@@ -146,15 +153,15 @@ class Mode0ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        #assert mode == 0
+        init_method = getattr(np.random, INIT_METHOD_A)
         self.mode = 0
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
         I = self.X[0].shape[0]
         rank = decomposer.rank
-        self.aux_factor_matrix = np.random.uniform(0, 1, size=(I, rank))
-        self.dual_variables = np.random.uniform(0, 1, size=(I, rank))
+        self.aux_factor_matrix = init_method(size=(I, rank))
+        self.dual_variables = init_method(size=(I, rank))
         decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
         decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
 
@@ -336,15 +343,15 @@ class Mode2ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        #assert mode == 2
+        init_method = getattr(np.random, INIT_METHOD_C)
         self.mode = 2
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
 
         K = len(decomposer.X)
         rank = decomposer.rank
-        self.aux_factor_matrix = np.random.uniform(0, 1, size=(K, rank))
-        self.dual_variables = np.random.uniform(0, 1, size=(K, rank))
+        self.aux_factor_matrix = init_method(size=(K, rank))
+        self.dual_variables = init_method(size=(K, rank))
         decomposer.auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
         decomposer.auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
 
@@ -508,7 +515,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
-        #assert mode == 1
+        init_method = getattr(np.random, INIT_METHOD_B)
 
         K = len(decomposer.X)
         rank = decomposer.rank
@@ -519,11 +526,11 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self._cache['rho'] = [np.inf]*K
 
-        self.blueprint_B = np.random.uniform(size=(rank, rank))
+        self.blueprint_B = init_method(size=(rank, rank))
         self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(K)]
-        self.reg_Bks = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
-        self.dual_variables_reg = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
-        self.dual_variables_pf2 = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.reg_Bks = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables_reg = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables_pf2 = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
 
 
         auxiliary_variables = decomposer.auxiliary_variables
@@ -875,6 +882,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
             The decomposer that uses this subproblem
         """
+        init_method = getattr(np.random, INIT_METHOD_B)
         K = len(decomposer.X)
         rank = decomposer.rank
         X = decomposer.X
@@ -884,10 +892,10 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
 
         self._cache['rho'] = [np.inf]*K
 
-        self.blueprint_B = np.random.uniform(size=(rank, rank))
+        self.blueprint_B = init_method(size=(rank, rank))
         self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(K)]
-        self.reg_Bks = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
-        self.dual_variables = [np.random.uniform(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.reg_Bks = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
+        self.dual_variables = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
 
         auxiliary_variables = decomposer.auxiliary_variables
         if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
@@ -1469,6 +1477,10 @@ class BlockEvolvingTensor(BaseDecomposer):
 
     def init_random(self):
         self.decomposition = self.DecompositionType.random_init(self.X_shape, rank=self.rank)
+        self.decomposition.A[:] = getattr(np.random, INIT_METHOD_A)(size=self.decomposition.A.shape)
+        for Bi in self.decomposition.B:
+            Bi[:] = getattr(np.random, INIT_METHOD_B)(size=Bi.shape)
+        self.decomposition.C[:] = getattr(np.random, INIT_METHOD_C)(size=self.decomposition.C.shape)
     
     def _init_fit(self, X, max_its, initial_decomposition):
         super()._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition)

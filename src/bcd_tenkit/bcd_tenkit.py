@@ -1,3 +1,6 @@
+# TODO: Prox class for each constraint
+# TODO: Convergence checker class
+
 from abc import ABC, abstractproperty, abstractmethod
 import tenkit
 from tenkit.decomposition import BaseDecomposer
@@ -17,6 +20,11 @@ from ._tv_prox import TotalVariationProx
 from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
+__all__ = [
+    "BaseSubProblem", "Mode0RLS", "Mode0ADMM", "Mode2RLS", "Mode2ADMM",
+    "DoubleSplittingParafac2ADMM", "SingleSplittingParafac2ADMM", 
+    "FlexibleCouplingParafac2", "BCDCoupledMatrixDecomposer"
+]
 
 # Initialisation method doesn't affect the results much
 # so we keep it uniform to have feasible init with NN constraints
@@ -87,7 +95,7 @@ class Mode0RLS(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         #assert mode == 0
@@ -150,7 +158,7 @@ class Mode0ADMM(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         init_method = getattr(np.random, INIT_METHOD_A)
@@ -280,7 +288,7 @@ class Mode2RLS(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         #assert mode == 2
@@ -340,7 +348,7 @@ class Mode2ADMM(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         init_method = getattr(np.random, INIT_METHOD_C)
@@ -512,7 +520,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         init_method = getattr(np.random, INIT_METHOD_B)
@@ -879,7 +887,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         init_method = getattr(np.random, INIT_METHOD_B)
@@ -1170,7 +1178,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         ---------
         mode : int
             The mode of the tensor that this subproblem should optimise wrt
-        decomposer : block_tenkit_admm.double_splitting_parafac2.BlockEvolvingTensor
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
         #assert mode == 1
@@ -1280,45 +1288,15 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             err += self.mu[k] * np.linalg.norm(PkB - decomposition.B[k])**2
         return err
 
-
-# TODO: UNUSED IDEA:
-class ConvergenceChecker:
-    @abstractmethod
-    def check_tolerance(self, decomposer):
-        pass
-    
-class LossChecker:
-    def __init__(self, relative_tolerance, absolute_tolerance):
-        self.relative_tolerance = relative_tolerance
-        self.absolute_tolerance = absolute_tolerance
-        self.previous_loss = None
-    
-    def check_tolerance(self, decomposer):
-        if self.previous_loss is None:
-            self.previous_loss = decomposer.loss
-            return False
-        
-        # Shorter names to get equations on a single line
-        loss = decomposer.loss
-        prev_loss = self.previous_loss
-        abs_tol = self.absolute_tolerance
-        rel_tol = self.relative_tolerance
-        rel_criterion = prev_loss - loss / rel_tol*prev_loss
-        abs_criterion = prev_loss - loss < abs_tol
-        
-        self.previous_loss = loss
-        return rel_criterion or abs_criterion
-
-
 # Main class
-class BlockEvolvingTensor(BaseDecomposer):
+class BCDCoupledMatrixDecomposer(BaseDecomposer):
     """
     Example usage
 
     .. code::
 
         sub_problems = [...]
-        pf2 = BlockEvolvingTensor(rank, subproblems)
+        pf2 = BCDCoupledMatrixDecomposer(rank, subproblems)
         pf2.fit(X)
     
 
@@ -1364,7 +1342,7 @@ class BlockEvolvingTensor(BaseDecomposer):
     convergence_method : str
         Method used to specify convergence, admm or flex
     """
-    DecompositionType = tenkit.decomposition.EvolvingTensor
+    DecompositionType = tenkit.decomposition.CoupledMatrices
     def __init__(
         self,
         rank,
@@ -1379,7 +1357,8 @@ class BlockEvolvingTensor(BaseDecomposer):
         convergence_check_frequency=1,
         absolute_tol=1e-16,
         problem_order=(1, 0, 2),
-        convergence_method="admm"
+        convergence_method="admm",
+        store_first_checkpoint=False
     ):
         super().__init__(
             max_its=max_its,
@@ -1397,6 +1376,7 @@ class BlockEvolvingTensor(BaseDecomposer):
         self.absolute_tolerance = absolute_tol
         self.problem_order = problem_order
         self.convergence_method = convergence_method
+        self.store_first_checkpoint = store_first_checkpoint
 
     @property
     def regularisation_penalty(self):
@@ -1412,16 +1392,19 @@ class BlockEvolvingTensor(BaseDecomposer):
         return self.SSE + self.regularisation_penalty
 
     def _fit(self):
-        if self.checkpoint_frequency > 0:
+        if self.checkpoint_frequency > 0 and self.store_first_checkpoint:
             # TODO: Consider to do this for tenkit too
             self.store_checkpoint()
-            
+
+
         for it in range(self.max_its - self.current_iteration):
             if self._has_converged():
                 break
+            if it == 0 and self.store_first_checkpoint:
+                for logger in self.loggers:
+                    logger.log(self)
 
             self._update_decomposition()
-            # TODO: _after_fit_cleanup()?
             self._after_fit_iteration()
 
             if self.current_iteration % self.print_frequency == 0 and self.print_frequency > 0:
@@ -1614,3 +1597,35 @@ class BlockEvolvingTensor(BaseDecomposer):
     @property
     def coupling_error(self):
         return sum(self.coupling_errors)                                                                                              
+
+
+# TODO: UNUSED IDEAS:
+class ConvergenceChecker:
+    @abstractmethod
+    def check_tolerance(self, decomposer):
+        pass
+    
+class LossChecker:
+    def __init__(self, relative_tolerance, absolute_tolerance):
+        self.relative_tolerance = relative_tolerance
+        self.absolute_tolerance = absolute_tolerance
+        self.previous_loss = None
+    
+    def check_tolerance(self, decomposer):
+        if self.previous_loss is None:
+            self.previous_loss = decomposer.loss
+            return False
+        
+        # Shorter names to get equations on a single line
+        loss = decomposer.loss
+        prev_loss = self.previous_loss
+        abs_tol = self.absolute_tolerance
+        rel_tol = self.relative_tolerance
+        rel_criterion = prev_loss - loss / rel_tol*prev_loss
+        abs_criterion = prev_loss - loss < abs_tol
+        
+        self.previous_loss = loss
+        return rel_criterion or abs_criterion
+
+# Alias to ensure that old code works:
+BlockEvolvingTensor = BCDCoupledMatrixDecomposer

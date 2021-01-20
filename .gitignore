@@ -1,3 +1,9 @@
+# Experiments
+timing/**/*.json
+timing/**/*.h5
+timing/**/*.gif
+timing/*/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

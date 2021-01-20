@@ -204,15 +204,39 @@ def make_summary_df(summaries):
     return pd.concat(summary_dfs)
 
 
-def make_log_plot(logs, log_name, ax=None):
+def plot_with_bounds(ax, xdata, ydata, label, log_scale=False, fms_log_scale=False):
+    assert not (log_scale and fms_log_scale)
+    if log_scale:
+        ax.plot(xdata, np.median(ydata, axis=0), label=label)
+        ax.fill_between(xdata, np.quantile(ydata, 0.25, axis=0), np.quantile(ydata, 0.75, axis=0), alpha=0.3)
+        ax.set_yscale('log')
+    elif fms_log_scale:
+        ydata = 1 - ydata
+        ax.plot(xdata, np.median(ydata, axis=0), label=label)
+        ax.fill_between(xdata, np.quantile(ydata, 0.25, axis=0), np.quantile(ydata, 0.75, axis=0), alpha=0.3)
+        ax.set_yscale('log')
+        ax.set_ylim(1, 0.01)
+        yticks = [1, 0.1, 0.01]
+        yticklabels = [str(1 - ytick) for ytick in yticks]
+        ax.set_yticks(yticks)
+        ax.set_yticklabels(yticklabels)
+    else:
+        ax.plot(xdata, np.median(ydata, axis=0), label=label)
+        ax.fill_between(xdata, np.quantile(ydata, 0.25, axis=0), np.quantile(ydata, 0.75, axis=0), alpha=0.3)
+
+
+
+def make_log_plot(logs, log_name, ax=None, log_scale=False, fms_log_scale=False, legend=True):
     if ax is None:
         ax = plt.gca()
     for method, log_dict in logs.items():
         log = make_log_array(log_dict[log_name])
         it_num = np.arange(1, MAX_ITS+1)
-        ax.plot(it_num, np.median(log, axis=0), label=method)
-        ax.fill_between(it_num, np.quantile(log, 0.25, axis=0), np.quantile(log, 0.75, axis=0), alpha=0.3)
-    ax.legend()
+        plot_with_bounds(ax, it_num, log, label=method, log_scale=log_scale, fms_log_scale=fms_log_scale)
+        #ax.plot(it_num, np.median(log, axis=0), label=method)
+        #ax.fill_between(it_num, np.quantile(log, 0.25, axis=0), np.quantile(log, 0.75, axis=0), alpha=0.3)
+    if legend:
+        ax.legend()
     ax.set_xlabel("Iteration")
     return ax
 
@@ -231,23 +255,26 @@ def make_time_per_it_plot(logs, ax=None):
     return ax
 
 
-def make_log_time_plot(logs, log_name, ax=None):
+def make_log_time_plot(logs, log_name, ax=None, log_scale=False, fms_log_scale=False, legend=True):
     if ax is None:
         ax = plt.gca()
     max_time = np.max([np.max(make_log_array(log_dict[TIME_NAME])) for log_dict in logs.values()])
-    uniform_time = np.linspace(0, max_time, 100000)
+    min_time = np.min([np.min(make_log_array(log_dict[TIME_NAME])) for log_dict in logs.values()])
+    uniform_time = np.linspace(min_time, max_time, 100000)
     for method, log_dict in logs.items():
         log = make_log_array(log_dict[log_name])
         time = make_log_array(log_dict[TIME_NAME])
         uniform_log = np.zeros((log.shape[0], 100000))
         for row, _ in enumerate(uniform_log):
-            interpolant = interp1d(time[row], log[row], fill_value=(0, log[row, -1]), bounds_error=False, kind="linear")
+            interpolant = interp1d(time[row], log[row], fill_value=(log[row, 0], log[row, -1]), bounds_error=False, kind="linear")
             uniform_log[row] = interpolant(uniform_time)
         
-        ax.plot(uniform_time, np.median(uniform_log, axis=0), label=method)
-        ax.fill_between(uniform_time, np.quantile(uniform_log, 0.25, axis=0), np.quantile(uniform_log, 0.75, axis=0), alpha=0.3)
-    
-    ax.legend()
+        plot_with_bounds(ax, uniform_time, uniform_log, label=method, log_scale=log_scale, fms_log_scale=fms_log_scale)
+        
+        #ax.plot(uniform_time, np.median(uniform_log, axis=0), label=method)
+        #ax.fill_between(uniform_time, np.quantile(uniform_log, 0.25, axis=0), np.quantile(uniform_log, 0.75, axis=0), alpha=0.3)
+    if legend:
+        ax.legend()
     ax.set_xlabel("Time [s]")
     return ax
 

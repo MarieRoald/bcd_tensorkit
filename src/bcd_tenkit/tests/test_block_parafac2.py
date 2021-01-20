@@ -1,6 +1,6 @@
 import pytest
 from tenkit.decomposition import KruskalTensor, Parafac2Tensor
-from tenkit.decomposition import RLS, Parafac2RLS, BlockParafac2, Parafac2ADMM
+from bcd_tenkit.bcd_parafac2 import RLS, Parafac2RLS, BlockParafac2, Parafac2ADMM
 from scipy.optimize import approx_fprime
 import numpy as np
 from tenkit.decomposition.cp import get_sse_lhs

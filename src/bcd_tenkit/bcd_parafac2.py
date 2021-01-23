@@ -10,7 +10,6 @@ import scipy.sparse.linalg as spla
 import scipy.sparse as sparse
 import pyamg
 
-from sklearn.utils.testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 
 from tenkit import base

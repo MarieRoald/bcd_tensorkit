@@ -473,15 +473,13 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         use_preinit=False,
         scad_penalty=None,
         scad_parameter=3.7,
-
-        pf2_coupling_scale=1
+        
     ):
         if rho is None:
             self.auto_rho = True
         else:
             self.auto_rho = False
         self.auto_rho_scaling = auto_rho_scaling
-        self.pf2_coupling_scale = pf2_coupling_scale
 
         self.rho = rho
         self.tol = tol
@@ -624,8 +622,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         rhos = self._cache['rho']
         normal_eq_lhs = self._cache['normal_eq_lhs']
         I = np.eye(decomposition.rank)
-        rho_scale = 0.5 + 0.5*self.pf2_coupling_scale
-        self._cache['choleskys'] = [sla.cho_factor(lhs + (rho*rho_scale + self.ridge_penalty)*I) for rho, lhs in zip(rhos, normal_eq_lhs)]
+        self._cache['choleskys'] = [sla.cho_factor(lhs + (rho + self.ridge_penalty)*I) for rho, lhs in zip(rhos, normal_eq_lhs)]
 
     def update_unconstrained(self, decomposition):
         K = decomposition.C.shape[0]
@@ -635,14 +632,13 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             rhs = self._cache['normal_eq_rhs'][k]  # X{kk}
             chol_lhs = self._cache['choleskys'][k]  # L{kk}
             rho = self._cache['rho'][k]  # rho(kk)
-            pf2_rho = self.pf2_coupling_scale * rho
             
             P = self.projection_matrices[k]  # P{kk}
             reg_Bk = self.reg_Bks[k]  # ZB{kk}
             dual_variables_reg = self.dual_variables_reg[k]  # mu_B_Z{kk}
             dual_variables_pf2 = self.dual_variables_pf2[k]  # mu_DeltaB[kk]
 
-            prox_rhs = rhs + 0.5*rho*(reg_Bk - dual_variables_reg) + 0.5*pf2_rho*(P@blueprint_B - dual_variables_pf2)
+            prox_rhs = rhs + 0.5*rho*(reg_Bk - dual_variables_reg) + 0.5*rho*(P@blueprint_B - dual_variables_pf2)
             decomposition.B[k][...] = sla.cho_solve(chol_lhs, prox_rhs.T).T
 
     def update_projections(self, decomposition):
@@ -780,7 +776,6 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         if self.l2_similarity is not None:
             B = decomposition.B
             W = self.l2_similarity
-            rank = decomposition.rank
             K = decomposition.C.shape[0]
             regulariser += sum(
                 np.trace(B[k].T@W@B[k]) 
@@ -1037,10 +1032,6 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
 
         for k, reg_Bk in enumerate(self.reg_Bks):
             reg_Bk[:] = proxed_values[:, k*decomposition.rank:(k+1)*decomposition.rank]
-        return
-
-        for k, reg_Bk in enumerate(self.reg_Bks):
-            reg_Bk[:] = self.prox(Bks[k] + dual_vars[k],)
 
     def update_duals(self, decomposition):
         K = decomposition.C.shape[0]
@@ -1056,7 +1047,6 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
             return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
         elif self.tv_penalty:
             return tv_denoise_matrix(factor_matrix.T, self.tv_penalty/rho).T
-            return TotalVariationProx(factor_matrix, self.tv_penalty/rho).prox()
             #return total_variation_prox(factor_matrix, 2*self.tv_penalty/rho)
         elif self.non_negativity:
             return np.maximum(factor_matrix, 0)
@@ -1118,7 +1108,6 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         if self.l2_similarity is not None:
             B = decomposition.B
             W = self.l2_similarity
-            rank = decomposition.rank
             K = decomposition.C.shape[0]
             regulariser += sum(
                 np.trace(B[k].T@W@B[k]) 
@@ -1371,11 +1360,6 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
 
     @property
     def regularisation_penalty(self):
-        factor_matrices = [
-            self.decomposition.A,
-            np.array(self.decomposition.B),
-            self.decomposition.C
-        ]
         return sum(sp.regulariser(self.decomposition) for sp in self.sub_problems)
 
     @property
@@ -1484,13 +1468,6 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         self.X_shape = [len(X[0]), [Xk.shape[1] for Xk in X], len(X)]    # len(A), len(Bk), len(C)
         self.X_norm = np.sqrt(sum(np.linalg.norm(Xk)**2 for Xk in X))
         self.num_X_elements = sum([np.prod(s) for s in self.X_shape])
-
-    @property
-    def loss(self):
-        loss = 0
-        for Xk, Xk_hat in zip(self.X, self.reconstructed_X):
-            loss += (np.linalg.norm(Xk - Xk_hat)/np.linalg.norm(Xk))**2
-        return loss
 
     @property
     def SSE(self):

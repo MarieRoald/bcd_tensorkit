@@ -15,6 +15,8 @@ from tenkit import utils
 from condat_tv import tv_denoise_matrix
 
 from tenkit.decomposition.cp import get_sse_lhs
+from tenkit.decomposition.parafac2 import compute_projected_X
+import tenkit.base
 from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
 from .hierarchical_nnls import nnls, prox_reg_nnls
@@ -272,6 +274,141 @@ class Mode0ADMM(BaseSubProblem):
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
+class Mode0ProjectedADMM(BaseSubProblem):
+    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+        self.tol = tol
+        self.non_negativity = non_negativity
+        self.ridge_penalty = ridge_penalty
+        self.max_its = max_its
+        self.rho = rho 
+        self.auto_rho = (rho is None)
+        self.verbose = verbose
+        self.l1_penalty = l1_penalty
+        self.projection_problem_idx = projection_problem_idx
+    
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
+            The decomposer that uses this subproblem
+        """
+        init_method = getattr(np.random, INIT_METHOD_A)
+        self.mode = 0
+        self.unfolded_X = np.concatenate([X_slice for X_slice in decomposer.X], axis=1)
+
+        I = decomposer.X[0].shape[0]
+        rank = decomposer.rank
+        self.aux_factor_matrix = init_method(size=(I, rank))
+        self.dual_variables = init_method(size=(I, rank))
+        decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
+        decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
+        
+        self.B_aux_vars = decomposer.auxiliary_variables[self.projection_problem_idx]
+
+    def update_decomposition(self, decomposition, auxiliary_variables):
+        self.cache = {}
+        self._recompute_normal_equation(decomposition)
+        self._set_rho(decomposition)
+        self._recompute_cholesky_cache(decomposition)
+
+        for i in range(self.max_its):
+            self._update_factor(decomposition)
+            self._update_aux_factor_matrix(decomposition)
+            self._update_duals(decomposition)
+
+            if self._has_converged(decomposition):
+                break
+        
+        self.num_its = i
+    
+    def regulariser(self, decomposition):
+        regulariser = 0
+        if self.ridge_penalty:
+            regulariser += self.ridge_penalty*np.sum(decomposition.A**2)
+        return regulariser
+
+    def get_coupling_errors(self, decomposition):
+        A = decomposition.A
+        return [np.linalg.norm(A - self.aux_factor_matrix)/np.linalg.norm(A)]
+    
+    def _recompute_normal_equation(self, decomposition):
+        self.cache["normal_eq_lhs"] = 0
+        self.cache["normal_eq_rhs"] = 0
+        C = decomposition.C
+        B = self.B_aux_vars['blueprint_B']
+        projected_X = self.B_aux_vars['projected_X']
+        for k, Ck in enumerate(C):
+            BDk = B*C[k, np.newaxis, :]
+            self.cache["normal_eq_lhs"] += BDk.T@BDk
+            self.cache["normal_eq_rhs"] += projected_X[..., k]@BDk
+        """
+        unfolded_X = projected_X.reshape(projected_X.shape[0], -1)
+        self.cache["normal_eq_lhs"] = (B.T@B) * (C.T@C)
+        self.cache["normal_eq_rhs"] = unfolded_X @ tenkit.base.khatri_rao(B, C)
+"""
+    def _set_rho(self, decomposition):
+        if not self.auto_rho:
+            return
+        else:
+            normal_eq_lhs = self.cache['normal_eq_lhs']
+            self.rho = np.trace(normal_eq_lhs)/decomposition.rank
+
+    def _recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        lhs = self.cache['normal_eq_lhs']
+        I = np.eye(decomposition.rank)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho + self.ridge_penalty)*I)
+
+    def _update_factor(self, decomposition):
+        rhs = self.cache['normal_eq_rhs']  # X{kk}
+        chol_lhs = self.cache['cholesky']  # L{kk}
+        rho = self.rho  # rho(kk)
+
+        prox_rhs = rhs + rho/2*(self.aux_factor_matrix - self.dual_variables)
+        decomposition.factor_matrices[self.mode][...]= sla.cho_solve(chol_lhs, prox_rhs.T).T
+
+    def _update_duals(self, decomposition):
+        self.previous_dual_variables = self.dual_variables
+        self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
+    
+    def _update_aux_factor_matrix(self, decomposition):
+        self.previous_factor_matrix = self.aux_factor_matrix
+
+        perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
+        if self.non_negativity and self.l1_penalty:
+            return np.maximum(self.aux_factor_matrix - 2*self.l1_penalty/self.rho, 0)
+        elif self.l1_penalty:
+            return np.sign(self.aux_factor_matrix)*np.maximum(np.abs(self.aux_factor_matrix) - 2*self.l1_penalty/self.rho, 0)
+        elif self.non_negativity:
+            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # The ridge penalty is now imposed on the data fitting term instead
+            self.aux_factor_matrix = perturbed_factor
+        else:
+            self.aux_factor_matrix = perturbed_factor
+        pass
+    
+    def _has_converged(self, decomposition):
+        factor_matrix = decomposition.factor_matrices[self.mode]
+        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
+        coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
+        
+        aux_change = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        
+        dual_var_norm = np.linalg.norm(self.dual_variables)**2
+        aux_change_criterion = (aux_change + 1e-16) / (dual_var_norm + 1e-16)
+        if self.verbose:
+            print("primal criteria", coupling_error, "dual criteria", aux_change)
+        return coupling_error < self.tol and aux_change_criterion < self.tol
+
+
 class Mode2RLS(BaseSubProblem):
     def __init__(self, non_negativity=False, ridge_penalty=0):
         self.non_negativity = non_negativity
@@ -336,7 +473,6 @@ class Mode2ADMM(BaseSubProblem):
         self.rho = rho 
         self.auto_rho = (rho is None)
         self.verbose = verbose
-    
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -458,6 +594,133 @@ class Mode2ADMM(BaseSubProblem):
         return coupling_error < self.tol and aux_change_criterion < self.tol
 
 
+class Mode2ProjectedADMM(BaseSubProblem):
+    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+        self.tol = tol
+        self.non_negativity = non_negativity
+        self.ridge_penalty = ridge_penalty
+        self.max_its = max_its
+        self.rho = rho 
+        self.auto_rho = (rho is None)
+        self.verbose = verbose
+        self.l1_penalty = l1_penalty
+        self.projection_problem_idx = projection_problem_idx
+    
+    def init_subproblem(self, mode, decomposer):
+        """Initialise the subproblem
+
+        Note that all extra variables used by this subproblem should be stored in the corresponding
+        auxiliary_variables dictionary
+
+        Arguments
+        ---------
+        mode : int
+            The mode of the tensor that this subproblem should optimise wrt
+        decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
+            The decomposer that uses this subproblem
+        """
+        init_method = getattr(np.random, INIT_METHOD_A)
+        self.mode = 2
+
+        K = len(decomposer.X)
+        rank = decomposer.rank
+        self.aux_factor_matrix = init_method(size=(K, rank))
+        self.dual_variables = init_method(size=(K, rank))
+        decomposer.auxiliary_variables[2]['aux_factor_matrix'] = self.aux_factor_matrix
+        decomposer.auxiliary_variables[2]['dual_variables'] = self.dual_variables
+        
+        self.B_aux_vars = decomposer.auxiliary_variables[self.projection_problem_idx]
+
+    def update_decomposition(self, decomposition, auxiliary_variables):
+        self.cache = {}
+        self._recompute_normal_equation(decomposition)
+        self._set_rho(decomposition)
+        self._recompute_cholesky_cache(decomposition)
+
+        for i in range(self.max_its):
+            self._update_factor(decomposition)
+            self._update_aux_factor_matrix(decomposition)
+            self._update_duals(decomposition)
+
+            if self._has_converged(decomposition):
+                break
+        
+        self.num_its = i
+    
+    def regulariser(self, decomposition):
+        regulariser = 0
+        if self.ridge_penalty:
+            regulariser += self.ridge_penalty*np.sum(decomposition.C**2)
+        return regulariser
+
+    def get_coupling_errors(self, decomposition):
+        C = decomposition.C
+        return [np.linalg.norm(C - self.aux_factor_matrix)/np.linalg.norm(C)]
+    
+    def _recompute_normal_equation(self, decomposition):
+        A = decomposition.A
+        B = self.B_aux_vars['blueprint_B']
+        projected_X = self.B_aux_vars['projected_X']
+        unfolded_X = projected_X.reshape(-1, projected_X.shape[-1]).T
+        self.cache["normal_eq_lhs"] = (A.T@A) * (B.T@B)
+        self.cache["normal_eq_rhs"] = unfolded_X @ tenkit.base.khatri_rao(A, B)
+
+    def _set_rho(self, decomposition):
+        if not self.auto_rho:
+            return
+        else:
+            normal_eq_lhs = self.cache['normal_eq_lhs']
+            self.rho = np.trace(normal_eq_lhs)/decomposition.rank
+
+    def _recompute_cholesky_cache(self, decomposition):
+        # Prepare to compute choleskys
+        lhs = self.cache['normal_eq_lhs']
+        I = np.eye(decomposition.rank)
+        self.cache['cholesky'] = sla.cho_factor(lhs + (0.5*self.rho + self.ridge_penalty)*I)
+
+    def _update_factor(self, decomposition):
+        rhs = self.cache['normal_eq_rhs']  # X{kk}
+        chol_lhs = self.cache['cholesky']  # L{kk}
+        rho = self.rho  # rho(kk)
+
+        prox_rhs = rhs + rho/2*(self.aux_factor_matrix - self.dual_variables)
+        decomposition.factor_matrices[self.mode][...]= sla.cho_solve(chol_lhs, prox_rhs.T).T
+
+    def _update_duals(self, decomposition):
+        self.previous_dual_variables = self.dual_variables
+        self.dual_variables = self.dual_variables + decomposition.factor_matrices[self.mode] - self.aux_factor_matrix
+    
+    def _update_aux_factor_matrix(self, decomposition):
+        self.previous_factor_matrix = self.aux_factor_matrix
+
+        perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
+        if self.non_negativity and self.l1_penalty:
+            return np.maximum(self.aux_factor_matrix - 2*self.l1_penalty/self.rho, 0)
+        elif self.l1_penalty:
+            return np.sign(self.aux_factor_matrix)*np.maximum(np.abs(self.aux_factor_matrix) - 2*self.l1_penalty/self.rho, 0)
+        elif self.non_negativity:
+            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        elif self.ridge_penalty:
+            # The ridge penalty is now imposed on the data fitting term instead
+            self.aux_factor_matrix = perturbed_factor
+        else:
+            self.aux_factor_matrix = perturbed_factor
+        pass
+    
+    def _has_converged(self, decomposition):
+        factor_matrix = decomposition.factor_matrices[self.mode]
+        coupling_error = np.linalg.norm(factor_matrix-self.aux_factor_matrix)**2
+        coupling_error /= np.linalg.norm(self.aux_factor_matrix)**2
+        
+        aux_change = np.linalg.norm(self.aux_factor_matrix-self.previous_factor_matrix)**2
+        
+        dual_var_norm = np.linalg.norm(self.dual_variables)**2
+        aux_change_criterion = (aux_change + 1e-16) / (dual_var_norm + 1e-16)
+        if self.verbose:
+            print("primal criteria", coupling_error, "dual criteria", aux_change)
+        return coupling_error < self.tol and aux_change_criterion < self.tol
+
+
 def _random_orthogonal_matrix(num_rows, num_cols):
     return np.linalg.qr(np.random.standard_normal(size=(num_rows, num_cols)))[0]
 
@@ -481,6 +744,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         scad_penalty=None,
         scad_parameter=3.7,
         
+        compute_projected_X=False
     ):
         if rho is None:
             self.auto_rho = True
@@ -507,6 +771,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.scad_parameter = scad_parameter
 
         self._cache = {}
+        self.compute_projected_X = compute_projected_X  # Only used for other modes
 
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -552,6 +817,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
         auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
+
+        if self.compute_projected_X:
+            self.projected_X = compute_projected_X(self.projection_matrices, X)
+            auxiliary_variables[1]['projected_X'] = self.projected_X
 
     def update_smoothness_proxes(self):
         if self.l2_similarity is None:
@@ -605,7 +874,9 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
             if self.has_converged(decomposition):
                 break
-
+        
+        if self.compute_projected_X:
+            compute_projected_X(self.projection_matrices, self.X, out=self.projected_X)
         self.num_its = i
 
     def recompute_normal_equation(self, decomposition):

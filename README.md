@@ -61,7 +61,7 @@ decomposer = bcd_tenkit.BCDCoupledMatrixDecomposer(
     rank,
     sub_problems=[
         bcd_tenkit.Mode0ADMM(non_negativity=True),
-        bcd_tenkit.DoubleSplittingParafac2ADMM(non_negativity=True),
+        bcd_tenkit.Parafac2ADMM(non_negativity=True),
         bcd_tenkit.Mode2ADMM(non_negativity=True)
     ],
     max_its=1000,
@@ -145,7 +145,7 @@ admm_decomposer = bcd_tenkit.BCDCoupledMatrixDecomposer(
     rank,
     sub_problems=[
         bcd_tenkit.Mode0ADMM(non_negativity=True),
-        bcd_tenkit.DoubleSplittingParafac2ADMM(non_negativity=True),
+        bcd_tenkit.Parafac2ADMM(non_negativity=True),
         bcd_tenkit.Mode2ADMM(non_negativity=True)
     ],
     max_its=1000,

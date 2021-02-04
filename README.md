@@ -1,9 +1,13 @@
-# Block coordinate descent for coupled matrix decomposition
+# Block coordinate descent for regularised PARAFAC2 decompositions
+
+## About the code
+
+This code contains an implementation of the constrained PARAFAC2 scheme introduced in *PARAFAC2 AO-ADMM: Constraints in all modes*, which is available on [arXiv](https://arxiv.org/abs/2102.02087).
 
 ## Installation instructions
 Currently, this code is dependent on experimental features of the TensorKit project. So you need to install the block_optimizer branch. I aim to merge this into master soon to make the installation process easier. For now, run the following two lines to install the correct versions of tensorkit and bcd_tensorkit.
 
-    pip install https://github.com/MarieRoald/TensorKit/archive/block_optimizer.zip
+    pip install git+https://github.com/MarieRoald/TensorKit.git@6faff50077fef2f47be9c5fdbec41bc8b16b7ec5
     pip install git+https://github.com/MarieRoald/bcd_tensorkit.git
 
 ## Simple non-negativity example:

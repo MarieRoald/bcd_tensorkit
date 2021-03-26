@@ -14,8 +14,13 @@ from warnings import warn
 from tenkit import utils
 from condat_tv import tv_denoise_matrix
 
+try:
+    import cvxpy
+except ImportError:
+    pass
+
 from tenkit.decomposition.cp import get_sse_lhs
-from tenkit.decomposition.parafac2 import compute_projected_X
+from tenkit.decomposition.parafac2 import compute_projected_X as compute_projected_tensor
 import tenkit.base
 from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
@@ -73,6 +78,11 @@ class BaseSubProblem(ABC):
     @abstractmethod
     def get_coupling_errors(self, decomposition):
         return []
+
+
+def l2_ball_projection(factor_matrices):
+    scale = np.maximum(1, np.linalg.norm(factor_matrices, axis=0, keepdims=True))
+    return factor_matrices / scale
 
 
 class Mode0RLS(BaseSubProblem):
@@ -140,7 +150,7 @@ class Mode0RLS(BaseSubProblem):
 
 
 class Mode0ADMM(BaseSubProblem):
-    def __init__(self, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
@@ -148,7 +158,7 @@ class Mode0ADMM(BaseSubProblem):
         self.rho = rho 
         self.auto_rho = (rho is None)
         self.verbose = verbose
-        self.l1_penalty = l1_penalty
+        self.l2_ball_constraint = l2_ball_constraint
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -174,6 +184,7 @@ class Mode0ADMM(BaseSubProblem):
         self.dual_variables = init_method(size=(I, rank))
         decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
         decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
+        #self._update_aux_factor_matrix(decomposer.decomposition)
 
     def update_decomposition(self, decomposition, auxiliary_variables):
         self.cache = {}
@@ -238,12 +249,10 @@ class Mode0ADMM(BaseSubProblem):
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
-        if self.non_negativity and self.l1_penalty:
-            return np.maximum(self.aux_factor_matrix - 2*self.l1_penalty/self.rho, 0)
-        elif self.l1_penalty:
-            return np.sign(self.aux_factor_matrix)*np.maximum(np.abs(self.aux_factor_matrix) - 2*self.l1_penalty/self.rho, 0)
+        if self.l2_ball_constraint:
+            self.aux_factor_matrix[:] = l2_ball_projection(perturbed_factor)
         elif self.non_negativity:
-            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+            self.aux_factor_matrix[:] = np.maximum(perturbed_factor, 0)
         elif self.ridge_penalty:
             # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
             # min (r/2) Tr(X^TX) + (rho/2)Tr(X^TX) - rho Tr(X^TY) + (rho/2) Tr(Y^TY)
@@ -254,10 +263,10 @@ class Mode0ADMM(BaseSubProblem):
             # X = (rho / (r + rho)) Y
 
             # The ridge penalty is now imposed on the data fitting term instead
-            self.aux_factor_matrix = perturbed_factor
+            self.aux_factor_matrix[:] = perturbed_factor
             #self.aux_factor_matrix = (self.rho / (self.ridge_penalty + self.rho)) * perturbed_factor
         else:
-            self.aux_factor_matrix = perturbed_factor
+            self.aux_factor_matrix[:] = perturbed_factor
         pass
     
     def _has_converged(self, decomposition):
@@ -343,16 +352,12 @@ class Mode0ProjectedADMM(BaseSubProblem):
         self.cache["normal_eq_rhs"] = 0
         C = decomposition.C
         B = self.B_aux_vars['blueprint_B']
-        projected_X = self.B_aux_vars['projected_X']
+        projected_tensor = self.B_aux_vars['projected_tensor']
         for k, Ck in enumerate(C):
             BDk = B*C[k, np.newaxis, :]
             self.cache["normal_eq_lhs"] += BDk.T@BDk
-            self.cache["normal_eq_rhs"] += projected_X[..., k]@BDk
-        """
-        unfolded_X = projected_X.reshape(projected_X.shape[0], -1)
-        self.cache["normal_eq_lhs"] = (B.T@B) * (C.T@C)
-        self.cache["normal_eq_rhs"] = unfolded_X @ tenkit.base.khatri_rao(B, C)
-"""
+            self.cache["normal_eq_rhs"] += projected_tensor[..., k]@BDk
+
     def _set_rho(self, decomposition):
         if not self.auto_rho:
             return
@@ -382,18 +387,13 @@ class Mode0ProjectedADMM(BaseSubProblem):
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
-        if self.non_negativity and self.l1_penalty:
-            return np.maximum(self.aux_factor_matrix - 2*self.l1_penalty/self.rho, 0)
-        elif self.l1_penalty:
-            return np.sign(self.aux_factor_matrix)*np.maximum(np.abs(self.aux_factor_matrix) - 2*self.l1_penalty/self.rho, 0)
-        elif self.non_negativity:
-            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        if self.non_negativity:
+            self.aux_factor_matrix[:] = np.maximum(perturbed_factor, 0)
         elif self.ridge_penalty:
             # The ridge penalty is now imposed on the data fitting term instead
-            self.aux_factor_matrix = perturbed_factor
+            self.aux_factor_matrix[:] = perturbed_factor
         else:
-            self.aux_factor_matrix = perturbed_factor
-        pass
+            self.aux_factor_matrix[:] = perturbed_factor
     
     def _has_converged(self, decomposition):
         factor_matrix = decomposition.factor_matrices[self.mode]
@@ -465,7 +465,7 @@ class Mode2RLS(BaseSubProblem):
 
 
 class Mode2ADMM(BaseSubProblem):
-    def __init__(self, ridge_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
         self.tol = tol
         self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
@@ -473,6 +473,7 @@ class Mode2ADMM(BaseSubProblem):
         self.rho = rho 
         self.auto_rho = (rho is None)
         self.verbose = verbose
+        self.l2_ball_constraint = l2_ball_constraint
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -498,6 +499,7 @@ class Mode2ADMM(BaseSubProblem):
         self.dual_variables = init_method(size=(K, rank))
         decomposer.auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
         decomposer.auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
+        #self._update_aux_factor_matrix(decomposer.decomposition)
 
     def update_decomposition(self, decomposition, auxiliary_variables):
         self.cache = {}
@@ -563,8 +565,18 @@ class Mode2ADMM(BaseSubProblem):
         self.previous_factor_matrix = self.aux_factor_matrix
 
         perturbed_factor = decomposition.factor_matrices[self.mode] + self.dual_variables
-        if self.non_negativity:
-            self.aux_factor_matrix =  np.maximum(perturbed_factor, 0)
+        if self.non_negativity and self.l2_ball_constraint:
+            for r in range(perturbed_factor.shape[1]):
+                x = cvxpy.Variable(perturbed_factor.shape[0])
+                objective = cvxpy.Minimize(cvxpy.sum_squares(x - perturbed_factor[:, r]))
+                constraints = [0 <= x, cvxpy.sum_squares(x) <= 1]
+                problem = cvxpy.Problem(objective, constraints)
+                problem.solve()
+                self.aux_factor_matrix[:, r] = x.value
+        elif self.non_negativity:
+            self.aux_factor_matrix[:] =  np.maximum(perturbed_factor, 0)
+        elif self.l2_ball_constraint:
+            self.aux_factor_matrix[:] = l2_ball_projection(perturbed_factor)
         # Ridge is not incorporated in the aux factor matrix
         #elif self.ridge_penalty:
         #    # min (r/2)||X||^2 + (rho/2)|| X - Y ||^2
@@ -577,8 +589,7 @@ class Mode2ADMM(BaseSubProblem):
         #    for k, _ in enumerate(perturbed_factor):
         #        self.aux_factor_matrix[k] = (self.rho[k] / (self.ridge_penalty + self.rho[k])) * perturbed_factor[k]
         else:
-            self.aux_factor_matrix = perturbed_factor
-        pass
+            self.aux_factor_matrix[:] = perturbed_factor
     
     def _has_converged(self, decomposition):
         factor_matrix = decomposition.factor_matrices[self.mode]
@@ -660,8 +671,8 @@ class Mode2ProjectedADMM(BaseSubProblem):
     def _recompute_normal_equation(self, decomposition):
         A = decomposition.A
         B = self.B_aux_vars['blueprint_B']
-        projected_X = self.B_aux_vars['projected_X']
-        unfolded_X = projected_X.reshape(-1, projected_X.shape[-1]).T
+        projected_tensor = self.B_aux_vars['projected_tensor']
+        unfolded_X = projected_tensor.reshape(-1, projected_tensor.shape[-1]).T
         self.cache["normal_eq_lhs"] = (A.T@A) * (B.T@B)
         self.cache["normal_eq_rhs"] = unfolded_X @ tenkit.base.khatri_rao(A, B)
 
@@ -731,7 +742,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         rho=None,
         auto_rho_scaling=1,
         tol=1e-3,
-        max_it=5,
+        max_its=5,
 
         non_negativity=False,
         l2_similarity=None,
@@ -743,8 +754,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         use_preinit=False,
         scad_penalty=None,
         scad_parameter=3.7,
+
+        pf2_prox_iterations=1,
         
-        compute_projected_X=False
+        compute_projected_tensor=False
     ):
         if rho is None:
             self.auto_rho = True
@@ -754,7 +767,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         self.rho = rho
         self.tol = tol
-        self.max_it = max_it
+        self.max_its = max_its
      
         self.non_negativity = non_negativity
         self.l2_similarity = l2_similarity
@@ -769,9 +782,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.use_preinit = use_preinit
         self.scad_penalty = scad_penalty
         self.scad_parameter = scad_parameter
+        self.pf2_prox_iterations = pf2_prox_iterations
 
         self._cache = {}
-        self.compute_projected_X = compute_projected_X  # Only used for other modes
+        self.compute_projected_tensor = compute_projected_tensor  # Only used for other modes
 
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -818,9 +832,9 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
         auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
 
-        if self.compute_projected_X:
-            self.projected_X = compute_projected_X(self.projection_matrices, X)
-            auxiliary_variables[1]['projected_X'] = self.projected_X
+        if self.compute_projected_tensor:
+            self.projected_tensor = compute_projected_tensor(self.projection_matrices, X)
+            auxiliary_variables[1]['projected_tensor'] = self.projected_tensor
 
     def update_smoothness_proxes(self):
         if self.l2_similarity is None:
@@ -847,7 +861,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.update_smoothness_proxes()
         # breakpoint()
         # The decomposition is modified inplace each iteration
-        for i in range(self.max_it):
+        for i in range(self.max_its):
             # Update Bks and Pks
             # Update blueprint
             # Update reg matrices
@@ -856,11 +870,12 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             self.update_unconstrained(decomposition)
             # print("unconstrained:", np.linalg.norm(decomposition.B[0], axis=0))
 
-            self.update_projections(decomposition)
+            for _ in range(self.pf2_prox_iterations):
+                self.update_projections(decomposition)
 
-            # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
-            self.update_blueprint(decomposition)
-            # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
+                # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
+                self.update_blueprint(decomposition)
+                # print("blueprint:", np.linalg.norm(self.blueprint_B, axis=0))
 
             # print("reg", np.linalg.norm(self.reg_Bks[0], axis=0))
             self.update_reg_factors(decomposition)
@@ -875,8 +890,8 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             if self.has_converged(decomposition):
                 break
         
-        if self.compute_projected_X:
-            compute_projected_X(self.projection_matrices, self.X, out=self.projected_X)
+        if self.compute_projected_tensor:
+            compute_projected_tensor(self.projection_matrices, self.X, out=self.projected_tensor)
         self.num_its = i
 
     def recompute_normal_equation(self, decomposition):
@@ -927,7 +942,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             Bk = decomposition.B[k]
             dual_variable_pf2_k = self.dual_variables_pf2[k]
             
-            U, s, Vh = np.linalg.svd((Bk + dual_variable_pf2_k)@blueprint_B.T, full_matrices=False)
+            U, s, Vh = sla.svd((Bk + dual_variable_pf2_k)@blueprint_B.T, full_matrices=False)
             self.projection_matrices[k] = U@Vh
 
     def update_blueprint(self, decomposition):
@@ -1108,7 +1123,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         rho=None,
         auto_rho_scaling=1,
         tol=1e-3,
-        max_it=5,
+        max_its=5,
 
         non_negativity=False,
         l2_similarity=None,
@@ -1127,7 +1142,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
 
         self.rho = rho
         self.tol = tol
-        self.max_it = max_it
+        self.max_its = max_its
      
         self.non_negativity = non_negativity
         self.l2_similarity = l2_similarity
@@ -1200,7 +1215,7 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         self.update_smoothness_prox()
         # breakpoint()
         # The decomposition is modified inplace each iteration            
-        for i in range(self.max_it):
+        for i in range(self.max_its):
             self.update_projections(decomposition)
             self.update_projected_tensor(decomposition, auxiliary_variables)
             self.update_blueprint(decomposition)
@@ -1258,11 +1273,12 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
             self.projection_matrices[k][:] = base.orthogonal_solve(lhs, rhs).T
     
     def update_projected_tensor(self, decomposition, auxiliary_matrices):
-        self._cache['projected_tensor'] = tenkit.decomposition.parafac2.compute_projected_X(
+        auxiliary_matrices[self.mode]['projected_tensor'] = tenkit.decomposition.parafac2.compute_projected_X(
             self.projection_matrices,
             self.X,
-            out=self._cache.get('projected_tensor', None)
+            out=auxiliary_matrices[self.mode].get('projected_tensor', None)
         )
+        self._cache['projected_tensor'] = auxiliary_matrices[self.mode]['projected_tensor']
 
         self._cache['normal_eq_rhs'] = base.matrix_khatri_rao_product(
             self._cache['projected_tensor'],
@@ -1497,7 +1513,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             self.blueprint_B[:] /= np.linalg.norm(self.blueprint_B, keepdims=True)
 
             for k in range(self.K):
-                U, s, Vh = np.linalg.svd(decomposition.B[k] @ self.blueprint_B.T, full_matrices=False)
+                U, s, Vh = sla.svd(decomposition.B[k] @ self.blueprint_B.T, full_matrices=False)
                 self.projection_matrices[k][:] = U@Vh
     
     def update_B(self, decomposition):
@@ -1618,7 +1634,8 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         absolute_tol=1e-16,
         problem_order=(1, 0, 2),
         convergence_method="admm",
-        store_first_checkpoint=False
+        store_first_checkpoint=False,
+        init_params=None
     ):
         super().__init__(
             max_its=max_its,
@@ -1637,6 +1654,10 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         self.problem_order = problem_order
         self.convergence_method = convergence_method
         self.store_first_checkpoint = store_first_checkpoint
+        self._cache = {}
+        if init_params is None:
+            init_params = {}
+        self.init_params = init_params
 
     @property
     def regularisation_penalty(self):
@@ -1664,9 +1685,9 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
 
             if self.current_iteration % self.print_frequency == 0 and self.print_frequency > 0:
                 rel_change = self._rel_function_change
-
-                print(f'{self.current_iteration:6d}: The MSE is {self.MSE:4g}, f is {self.loss:4g}, '
-                      f'improvement is {rel_change:g}, coupling_errors: {self.coupling_errors}')
+                ce_string = ', '.join(f'{ce:.1g}' for ce in self.coupling_errors)
+                print(f'{self.current_iteration:6d}: The MSE is {self.MSE:.4g}, f is {self.loss:4g}, '
+                      f'improvement is {rel_change:.2g}, coupling errors: {ce_string}')
 
         if (
             ((self.current_iteration) % self.checkpoint_frequency != 0) and 
@@ -1682,20 +1703,39 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
             self.sub_problems[problem_id].update_decomposition(
                 self.decomposition, self.auxiliary_variables,
             )
+            self._cache = {}
 
     def _check_valid_components(self, decomposition):
         assert type(decomposition) == tenkit.decomposition.EvolvingTensor
 
     def init_pf2_als(self):
         # Should we have an init_params dict?
-        pf2 = tenkit.decomposition.Parafac2_ALS(self.rank, max_its=1, print_frequency=-1)
+        init_params = self.init_params
+        init_params["max_its"] = init_params.get("max_its", 1)
+        init_params["non_negativity_constraints"] = init_params.get("non_negativity_constraints", [False, False, True])
+        init_params["print_frequency"] = init_params.get("print_frequency", -1)
+        pf2 = tenkit.decomposition.Parafac2_ALS(
+            self.rank,
+            **init_params
+        )
         pf2.fit(list(self.X))
+        A = pf2.decomposition.A
+        B = pf2.decomposition.B
+        C = pf2.decomposition.C
+
+        norm_A = np.linalg.norm(A, axis=0, keepdims=True)
+        norm_B = np.linalg.norm(B[0], axis=0, keepdims=True)
+        norm_C = np.linalg.norm(C, axis=0, keepdims=True)
+        norm = (norm_A*norm_B*norm_C)**(1/3)
+        A = norm * A / norm_A
+        B = [norm * Bk / norm_B for Bk in B]
+        C = norm * C / norm_C
 
         self.decomposition = self.DecompositionType(
-            pf2.decomposition.A, list(pf2.decomposition.B), pf2.decomposition.C
+            A, B, C
         )
         self.auxiliary_variables[1]['projection_matrices'] = list(pf2.decomposition.projection_matrices)
-        self.auxiliary_variables[1]['blueprint_B'] = pf2.decomposition.blueprint_B
+        self.auxiliary_variables[1]['blueprint_B'] = norm * pf2.decomposition.blueprint_B / norm_B
 
     def init_components(self, initial_decomposition=None):
         if self.init.lower() == 'random':
@@ -1756,6 +1796,11 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
     @property
     def SSE(self):
         return utils.slice_SSE(self.X, self.reconstructed_X)
+
+        #if 'sse' in self._cache:
+        #    return self._cache['sse']
+        #self._cache['sse'] = utils.slice_SSE(self.X, self.reconstructed_X)
+        #return self._cache['sse']
 
     @property
     def MSE(self):

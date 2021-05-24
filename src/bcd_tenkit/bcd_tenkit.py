@@ -24,6 +24,7 @@ from tenkit.decomposition.parafac2 import compute_projected_X as compute_project
 import tenkit.base
 from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
+from unimodal_regression import unimodal_regression
 from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
@@ -754,6 +755,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         use_preinit=False,
         scad_penalty=None,
         scad_parameter=3.7,
+        unimodality=False,
 
         pf2_prox_iterations=1,
         
@@ -774,6 +776,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         self.l1_penalty = l1_penalty
         self.tv_penalty = tv_penalty
         self.ridge_penalty = ridge_penalty
+        self.unimodality = unimodality
         if self.ridge_penalty is None:
             self.ridge_penalty = 0
 
@@ -844,6 +847,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             I = sparse.eye(self.l2_similarity.shape[0])
         else:
             I = np.identity(self.l2_similarity.shape[0])
+        
         reg_matrices = [self.l2_similarity + 0.5*rho*I for rho in self._cache['rho']]
 
         self._cache['l2_reg_solvers'] = [
@@ -967,6 +971,10 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             return np.maximum(factor_matrix - 2*self.l1_penalty/rho, 0)
         elif self.l1_penalty:
             return np.sign(factor_matrix)*np.maximum(np.abs(factor_matrix) - 2*self.l1_penalty/rho, 0)
+        elif self.unimodality and self.non_negativity:
+            return unimodal_regression(factor_matrix, non_negativity=True)
+        elif self.unimodality:
+            return unimodal_regression(factor_matrix, non_negativity=False)
         elif self.tv_penalty:
             return tv_denoise_matrix(factor_matrix.T, self.tv_penalty/rho).T
         elif self.non_negativity:

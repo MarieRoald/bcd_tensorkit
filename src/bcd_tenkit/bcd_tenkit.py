@@ -372,9 +372,10 @@ class Mode0ProjectedADMM(BaseSubProblem):
         C = decomposition.C
         B = self.B_aux_vars['blueprint_B']
         projected_tensor = self.B_aux_vars['projected_tensor']
+        self.cache["normal_eq_lhs"] = (B.T@B) * (C.T@C)
         for k, Ck in enumerate(C):
             BDk = B*C[k, np.newaxis, :]
-            self.cache["normal_eq_lhs"] += BDk.T@BDk
+            #self.cache["normal_eq_lhs"] += BDk.T@BDk
             self.cache["normal_eq_rhs"] += projected_tensor[..., k]@BDk
 
     def _set_rho(self, decomposition):
@@ -950,11 +951,12 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         K = decomposition.C.shape[0]
         self._cache['normal_eq_rhs'] = [None for _ in range(K)]
         self._cache['normal_eq_lhs'] = [None for _ in range(K)]
-        AtA = decomposition.A.T @ decomposition.A
+        AtA = decomposition.A.T @ decomposition.A
         for k in range(K):
+            Dk = decomposition.C[k].reshape(-1, 1)
             ADk = decomposition.A*decomposition.C[k, np.newaxis]
             self._cache['normal_eq_rhs'][k] = self.X[k].T@ADk
-            self._cache['normal_eq_lhs'][k] = Dk@AtA@Dk#ADk.T@ADk
+            self._cache['normal_eq_lhs'][k] = Dk.T*AtA*Dk#ADk.T@ADk
 
     def set_rhos(self, decomposition):
         if not self.auto_rho:

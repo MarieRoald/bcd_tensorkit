@@ -151,7 +151,7 @@ class Mode0RLS(BaseSubProblem):
 
 
 class Mode0ADMM(BaseSubProblem):
-    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False, use_preinit=False):
         self.tol = tol
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
@@ -160,6 +160,7 @@ class Mode0ADMM(BaseSubProblem):
         self.auto_rho = (rho is None)
         self.verbose = verbose
         self.l2_ball_constraint = l2_ball_constraint
+        self.use_preinit = use_preinit
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -183,8 +184,16 @@ class Mode0ADMM(BaseSubProblem):
         rank = decomposer.rank
         self.aux_factor_matrix = init_method(size=(I, rank))
         self.dual_variables = init_method(size=(I, rank))
-        decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
-        decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
+        else:
+            auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
+
+        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+        else:
+            auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         #self._update_aux_factor_matrix(decomposer.decomposition)
 
     def update_decomposition(self, decomposition, auxiliary_variables):
@@ -285,7 +294,7 @@ class Mode0ADMM(BaseSubProblem):
 
 
 class Mode0ProjectedADMM(BaseSubProblem):
-    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False, use_preinit=False):
         self.tol = tol
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
@@ -295,6 +304,7 @@ class Mode0ProjectedADMM(BaseSubProblem):
         self.verbose = verbose
         self.l1_penalty = l1_penalty
         self.projection_problem_idx = projection_problem_idx
+        self.use_preinit = use_preinit
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -317,8 +327,16 @@ class Mode0ProjectedADMM(BaseSubProblem):
         rank = decomposer.rank
         self.aux_factor_matrix = init_method(size=(I, rank))
         self.dual_variables = init_method(size=(I, rank))
-        decomposer.auxiliary_variables[0]['aux_factor_matrix'] = self.aux_factor_matrix
-        decomposer.auxiliary_variables[0]['dual_variables'] = self.dual_variables
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
+        else:
+            auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
+
+        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+        else:
+            auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         
         self.B_aux_vars = decomposer.auxiliary_variables[self.projection_problem_idx]
 
@@ -466,7 +484,7 @@ class Mode2RLS(BaseSubProblem):
 
 
 class Mode2ADMM(BaseSubProblem):
-    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, ridge_penalty=0, l2_ball_constraint=False, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False, use_preinit=False):
         self.tol = tol
         self.ridge_penalty = ridge_penalty
         self.non_negativity = non_negativity
@@ -475,6 +493,7 @@ class Mode2ADMM(BaseSubProblem):
         self.auto_rho = (rho is None)
         self.verbose = verbose
         self.l2_ball_constraint = l2_ball_constraint
+        self.use_preinit = use_preinit
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -498,8 +517,16 @@ class Mode2ADMM(BaseSubProblem):
         rank = decomposer.rank
         self.aux_factor_matrix = init_method(size=(K, rank))
         self.dual_variables = init_method(size=(K, rank))
-        decomposer.auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
-        decomposer.auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
+        else:
+            auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
+
+        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+        else:
+            auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         #self._update_aux_factor_matrix(decomposer.decomposition)
 
     def update_decomposition(self, decomposition, auxiliary_variables):
@@ -607,7 +634,7 @@ class Mode2ADMM(BaseSubProblem):
 
 
 class Mode2ProjectedADMM(BaseSubProblem):
-    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False):
+    def __init__(self, projection_problem_idx, ridge_penalty=0, l1_penalty=0, non_negativity=False, max_its=10, tol=1e-5, rho=None, verbose=False, use_preinit=False):
         self.tol = tol
         self.non_negativity = non_negativity
         self.ridge_penalty = ridge_penalty
@@ -617,6 +644,7 @@ class Mode2ProjectedADMM(BaseSubProblem):
         self.verbose = verbose
         self.l1_penalty = l1_penalty
         self.projection_problem_idx = projection_problem_idx
+        self.use_preinit = use_preinit
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -631,15 +659,23 @@ class Mode2ProjectedADMM(BaseSubProblem):
         decomposer : block_tenkit_admm.double_splitting_parafac2.BCDCoupledMatrixDecomposer
             The decomposer that uses this subproblem
         """
-        init_method = getattr(np.random, INIT_METHOD_A)
+        init_method = getattr(np.random, INIT_METHOD_C)
         self.mode = 2
 
         K = len(decomposer.X)
         rank = decomposer.rank
         self.aux_factor_matrix = init_method(size=(K, rank))
         self.dual_variables = init_method(size=(K, rank))
-        decomposer.auxiliary_variables[2]['aux_factor_matrix'] = self.aux_factor_matrix
-        decomposer.auxiliary_variables[2]['dual_variables'] = self.dual_variables
+        auxiliary_variables = decomposer.auxiliary_variables
+        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
+        else:
+            auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
+
+        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+        else:
+            auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         
         self.B_aux_vars = decomposer.auxiliary_variables[self.projection_problem_idx]
 
@@ -831,10 +867,22 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
             self.projection_matrices = auxiliary_variables[1]['projection_matrices']
         else:
             auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
-        auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
-        auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
-        auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
 
+        if 'reg_Bks' in auxiliary_variables[1] and self.use_preinit:
+            self.reg_Bks = auxiliary_variables[1]['reg_Bks']
+        else:
+            auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
+
+        if 'dual_variables_reg' in auxiliary_variables[1] and self.use_preinit:
+            self.dual_variables_reg = auxiliary_variables[1]['dual_variables_reg']
+        else:
+            auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
+            
+        if 'dual_variables_pf2' in auxiliary_variables[1] and self.use_preinit:
+            self.dual_variables_pf2 = auxiliary_variables[1]['dual_variables_pf2']
+        else:
+            auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
+            
         if self.compute_projected_tensor:
             self.projected_tensor = compute_projected_tensor(self.projection_matrices, X)
             auxiliary_variables[1]['projected_tensor'] = self.projected_tensor
@@ -902,10 +950,11 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
         K = decomposition.C.shape[0]
         self._cache['normal_eq_rhs'] = [None for _ in range(K)]
         self._cache['normal_eq_lhs'] = [None for _ in range(K)]
+        AtA = decomposition.A.T @ decomposition.A
         for k in range(K):
             ADk = decomposition.A*decomposition.C[k, np.newaxis]
             self._cache['normal_eq_rhs'][k] = self.X[k].T@ADk
-            self._cache['normal_eq_lhs'][k] = ADk.T@ADk
+            self._cache['normal_eq_lhs'][k] = Dk@AtA@Dk#ADk.T@ADk
 
     def set_rhos(self, decomposition):
         if not self.auto_rho:
@@ -1438,7 +1487,8 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         num_projection_its=5,
         max_nnls_its=100,
         non_negativity=True,
-        l2_penalty=None
+        l2_penalty=None,
+        use_preinit=False
     ):
         assert mu_increase > 1
         assert max_mu > 0
@@ -1451,6 +1501,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.max_nnls_its = max_nnls_its
         self.non_negativity = non_negativity
         self.l2_penalty = l2_penalty
+        self.use_preinit = use_preinit
     
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -1488,8 +1539,13 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.blueprint_B = np.random.uniform(size=(rank, rank))
         self.projection_matrices = [np.eye(X[k].shape[1], rank) for k in range(self.K)]
 
-        decomposer.auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
-        decomposer.auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+        if self.use_preinit:
+            self.blueprint_B = decomposer.auxiliary_variables[1]['blueprint_B']
+            self.projection_matrices= decomposer.auxiliary_variables[1]['projection_matrices']
+        else:
+            decomposer.auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
+            decomposer.auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
+        
 
     def update_decomposition(
         self, decomposition, auxiliary_variables

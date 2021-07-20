@@ -191,7 +191,7 @@ class Mode0ADMM(BaseSubProblem):
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
         if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
-            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+            self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         #self._update_aux_factor_matrix(decomposer.decomposition)
@@ -334,7 +334,7 @@ class Mode0ProjectedADMM(BaseSubProblem):
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
         if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
-            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+            self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         
@@ -525,7 +525,7 @@ class Mode2ADMM(BaseSubProblem):
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
         if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
-            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+            self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         #self._update_aux_factor_matrix(decomposer.decomposition)
@@ -674,7 +674,7 @@ class Mode2ProjectedADMM(BaseSubProblem):
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
         if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
-            self.aux_factor_matrix = auxiliary_variables[self.mode]['dual_variables']
+            self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
         

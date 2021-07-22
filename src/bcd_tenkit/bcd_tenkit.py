@@ -185,12 +185,12 @@ class Mode0ADMM(BaseSubProblem):
         self.aux_factor_matrix = init_method(size=(I, rank))
         self.dual_variables = init_method(size=(I, rank))
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
             self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
         else:
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
-        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
             self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
@@ -328,12 +328,12 @@ class Mode0ProjectedADMM(BaseSubProblem):
         self.aux_factor_matrix = init_method(size=(I, rank))
         self.dual_variables = init_method(size=(I, rank))
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
             self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
         else:
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
-        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
             self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
@@ -519,12 +519,12 @@ class Mode2ADMM(BaseSubProblem):
         self.aux_factor_matrix = init_method(size=(K, rank))
         self.dual_variables = init_method(size=(K, rank))
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
             self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
         else:
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
-        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
             self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
@@ -668,12 +668,12 @@ class Mode2ProjectedADMM(BaseSubProblem):
         self.aux_factor_matrix = init_method(size=(K, rank))
         self.dual_variables = init_method(size=(K, rank))
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'aux_factor_matrix' in auxiliary_variables[self.mode] and self.use_preinit:
             self.aux_factor_matrix = auxiliary_variables[self.mode]['aux_factor_matrix']
         else:
             auxiliary_variables[self.mode]['aux_factor_matrix'] = self.aux_factor_matrix
 
-        if 'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
+        if self.use_preinit: #'dual_variables' in auxiliary_variables[self.mode] and self.use_preinit:
             self.dual_variables = auxiliary_variables[self.mode]['dual_variables']
         else:
             auxiliary_variables[self.mode]['dual_variables'] = self.dual_variables
@@ -859,27 +859,27 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
 
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
             self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
         else:
             auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
 
-        if 'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
             self.projection_matrices = auxiliary_variables[1]['projection_matrices']
         else:
             auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
 
-        if 'reg_Bks' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'reg_Bks' in auxiliary_variables[1] and self.use_preinit:
             self.reg_Bks = auxiliary_variables[1]['reg_Bks']
         else:
             auxiliary_variables[1]['reg_Bks'] = self.reg_Bks
 
-        if 'dual_variables_reg' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'dual_variables_reg' in auxiliary_variables[1] and self.use_preinit:
             self.dual_variables_reg = auxiliary_variables[1]['dual_variables_reg']
         else:
             auxiliary_variables[1]['dual_variables_reg'] = self.dual_variables_reg
             
-        if 'dual_variables_pf2' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'dual_variables_pf2' in auxiliary_variables[1] and self.use_preinit:
             self.dual_variables_pf2 = auxiliary_variables[1]['dual_variables_pf2']
         else:
             auxiliary_variables[1]['dual_variables_pf2'] = self.dual_variables_pf2
@@ -1246,12 +1246,12 @@ class SingleSplittingParafac2ADMM(BaseSubProblem):
         self.dual_variables = [init_method(size=(X[k].shape[1], rank)) for k in range(K)]
 
         auxiliary_variables = decomposer.auxiliary_variables
-        if 'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
             self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
         else:
             auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
 
-        if 'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
+        if self.use_preinit: #'projection_matrices' in auxiliary_variables[1] and self.use_preinit:
             self.projection_matrices = auxiliary_variables[1]['projection_matrices']
         else:
             auxiliary_variables[1]['projection_matrices'] = self.projection_matrices

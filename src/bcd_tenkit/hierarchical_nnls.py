@@ -1,10 +1,10 @@
 import numpy as np
 
 
-def nnls(A, Y, Bt, max_its=500):
-    rank = A.shape[1]
-    AtA = A.T@A
-    AtY = A.T@Y
+def nnls(AtA, AtY, Bt, max_its=500):
+    rank = AtA.shape[0]
+    #AtA = A.T@A
+    #AtY = A.T@Y
     
     tol = 1e-6**2
     initial_factor_diff = 0
@@ -30,11 +30,11 @@ def nnls(A, Y, Bt, max_its=500):
     return Bt
 
 
-def prox_reg_nnls(A, Y, Bt, reg_strength, proximity_center, max_its=500):
-    rank = A.shape[1]
+def prox_reg_nnls(AtA, AtY, Bt, reg_strength, proximity_center, max_its=500):
+    rank = AtA.shape[0]
     
-    AtA = A.T@A
-    AtY = A.T@Y
+    #AtA = A.T@A
+    #AtY = A.T@Y
 
     tol = 1e-6
     initial_factor_diff = 0

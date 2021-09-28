@@ -24,7 +24,7 @@ from tenkit.decomposition.parafac2 import compute_projected_X as compute_project
 import tenkit.base
 from ._smoothness import _SmartSymmetricPDSolver
 from ._tv_prox import TotalVariationProx
-from unimodal_regression import unimodal_regression
+from ._unimodality import unimodal_regression
 from .hierarchical_nnls import nnls, prox_reg_nnls
 
 # TODO: Input random state for init
@@ -94,9 +94,8 @@ class Mode0RLS(BaseSubProblem):
     fitting iteration. The update_decomposition method is called each factor
     update iteration.
     """
-    def __init__(self, non_negativity=False, ridge_penalty=0):
+    def __init__(self, non_negativity=False):
         self.non_negativity = non_negativity
-        self.ridge_penalty = ridge_penalty
 
     def init_subproblem(self, mode, decomposer):
         """Initialise the subproblem
@@ -115,14 +114,8 @@ class Mode0RLS(BaseSubProblem):
         self.mode = 0
         self.X = decomposer.X
         self.unfolded_X = np.concatenate([X_slice for X_slice in self.X], axis=1)
+        decomposer.auxiliary_variables[0]['AtA'] = decomposer.decomposition.A.T@decomposer.decomposition.A
 
-    def _get_rightsolve(self):
-        rightsolve = base.rightsolve
-        if self.non_negativity:
-            rightsolve = nnls
-        if self.ridge_penalty:
-            rightsolve = base.add_rightsolve_ridge(rightsolve, self.ridge_penalty)
-        return rightsolve
         
     def update_decomposition(self, decomposition, auxiliary_variables):
         # TODO: This should all be fixed by _get_rightsolve
@@ -133,18 +126,18 @@ class Mode0RLS(BaseSubProblem):
                 Bk = decomposition.B[k]
                 Dk = np.diag(decomposition.C[k])
                 factors_times_data += Xk @ Bk @ Dk
-                cross_product += Dk @ Bk.T @ Bk @ Dk
+                BktBk = auxiliary_variables[1]['BktBk'][k]
+                cross_product += Dk @ BktBk @ Dk
             
             decomposition.A[...] = nnls(cross_product.T, factors_times_data.T, decomposition.A.T, 100).T
         else:
-            rightsolve = self._get_rightsolve()
             right = np.concatenate([c*B for c, B in zip(decomposition.C, decomposition.B)], axis=0)
-            decomposition.A[...] = rightsolve(right.T, self.unfolded_X)
+            decomposition.A[...] = base.rightsolve(right.T, self.unfolded_X)
+        
+        auxiliary_variables[0]['AtA'] = decomposition.A.T@decomposition.A
     
     def regulariser(self, decomposition):
-        if not self.ridge_penalty:
-            return 0
-        return self.ridge_penalty*np.sum(decomposition.A**2)
+        return 0
     
     def get_coupling_errors(self, decomposition):
         return []
@@ -430,9 +423,8 @@ class Mode0ProjectedADMM(BaseSubProblem):
 
 
 class Mode2RLS(BaseSubProblem):
-    def __init__(self, non_negativity=False, ridge_penalty=0):
+    def __init__(self, non_negativity=False):
         self.non_negativity = non_negativity
-        self.ridge_penalty = ridge_penalty
 
     
     def init_subproblem(self, mode, decomposer):
@@ -452,33 +444,27 @@ class Mode2RLS(BaseSubProblem):
         self.mode = 2
         self.X = decomposer.X
 
-    def _get_rightsolve(self):
-        rightsolve = base.rightsolve
-        if self.non_negativity:
-            rightsolve = base.non_negative_rightsolve
-        if self.ridge_penalty:
-            rightsolve = base.add_rightsolve_ridge(rightsolve, self.ridge_penalty)
-        return rightsolve
         
     def update_decomposition(self, decomposition, auxiliary_variables):
-        # TODO: This should all be fixed by _get_rightsolve
+        AtA = auxiliary_variables[0]['AtA']
+        A = decomposition.A
         if self.non_negativity:
-            for k, (c_row, factor_matrix) in enumerate(zip(decomposition.C,  decomposition.B)):
-                X_k_vec = self.X[k].reshape(-1, 1)
-                lhs = base.khatri_rao(decomposition.A, factor_matrix)
-                c_row[...] = nnls(lhs, X_k_vec, c_row, 100)
+            for k, (c_row, Bk) in enumerate(zip(decomposition.C,  decomposition.B)):
+                #X_k_vec = self.X[k].reshape(-1, 1)
+                BktBk = auxiliary_variables[1]['BktBk'][k]
+                lhs = AtA * BktBk
+                rhs = np.diag(A.T@self.X[k]@Bk).reshape(-1, 1)
+                c_row = nnls(lhs, rhs, c_row, 100)
+                #c_row[...] = nnls(lhs, X_k_vec, c_row, 100)
             return
 
-        rightsolve = self._get_rightsolve()
         for k, (c_row, factor_matrix) in enumerate(zip(decomposition.C,  decomposition.B)):
             X_k_vec = self.X[k].reshape(-1, 1)
             lhs = base.khatri_rao(decomposition.A, factor_matrix)
-            c_row[...] = rightsolve(lhs.T, X_k_vec.T.ravel())
+            c_row[...] = base.rightsolve(lhs.T, X_k_vec.T.ravel())
 
     def regulariser(self, decomposition):
-        if not self.ridge_penalty:
-            return 0
-        return self.ridge_penalty*np.sum(decomposition.C**2)
+        return 0
 
     def get_coupling_errors(self, decomposition):
         return []
@@ -860,7 +846,7 @@ class DoubleSplittingParafac2ADMM(BaseSubProblem):
 
         auxiliary_variables = decomposer.auxiliary_variables
         if self.use_preinit: #'blueprint_B' in auxiliary_variables[1] and self.use_preinit:
-            self.blueprint_B[:] = auxiliary_variables[1]['blueprint_B']
+            self.blueprint_B = auxiliary_variables[1]['blueprint_B']
         else:
             auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
 
@@ -1548,6 +1534,8 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             decomposer.auxiliary_variables[1]['blueprint_B'] = self.blueprint_B
             decomposer.auxiliary_variables[1]['projection_matrices'] = self.projection_matrices
         
+        decomposer.auxiliary_variables[1]['BktBk'] = [Bk.T@Bk for Bk in decomposer.decomposition.B] 
+        
 
     def update_decomposition(
         self, decomposition, auxiliary_variables
@@ -1560,7 +1548,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
         self.update_blueprint_and_projections(decomposition)
         
         # Update the factor matrices
-        self.update_B(decomposition)
+        self.update_B(decomposition, auxiliary_variables)
 
         # Reinitialise coupling strength after first iteration
         if self.current_iteration == 0:
@@ -1568,6 +1556,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             coupling_error = [np.linalg.norm(decomposition.B[k] - self.projection_matrices[k]@self.blueprint_B)**2 for k in range(self.K)]
             self.mu[:] = [slice_wise_sse[k] / (self.mu[k]*coupling_error[k]) for k in range(self.K)]
 
+        auxiliary_variables[1]['BktBk'] = [Bk.T@Bk for Bk in decomposition.B] 
         self.current_iteration += 1
 
     def update_blueprint_and_projections(self, decomposition):
@@ -1575,6 +1564,7 @@ class FlexibleCouplingParafac2(BaseSubProblem):
             B_mean = 0
             for k in range(self.K):
                 B_mean += self.mu[k] * (self.projection_matrices[k].T@decomposition.B[k])
+
             self.blueprint_B[:] = B_mean / np.sum(self.mu)
             self.blueprint_B[:] /= np.linalg.norm(self.blueprint_B, keepdims=True)
 
@@ -1582,13 +1572,21 @@ class FlexibleCouplingParafac2(BaseSubProblem):
                 U, s, Vh = sla.svd(decomposition.B[k] @ self.blueprint_B.T, full_matrices=False)
                 self.projection_matrices[k][:] = U@Vh
     
-    def update_B(self, decomposition):
+    def update_B(self, decomposition, auxiliary_variables):
         for k in range(self.K):
             ADk = decomposition.A * decomposition.C[k, np.newaxis]
+            Dk = np.diag(decomposition.C[k])
+            AtA = auxiliary_variables[0]['AtA']
             PkB = self.projection_matrices[k]@self.blueprint_B
 
             if self.non_negativity:
-                decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+                
+                decomposition.B[k][:] = prox_reg_nnls(
+                    Dk@AtA@Dk, ADk.T@self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its
+                ).T
+                #decomposition.B[k][:] = prox_reg_nnls(ADk, self.X[k], decomposition.B[k].T, self.mu[k], PkB.T, self.max_nnls_its).T
+            
+            
             elif self.l2_penalty is not None:
                 #raise NotImplementedError
                 # || (ADk) Bk^T - Xk ||^2 + µ ||Bk^T - (PkB)^T||^2 + <Bk, W Bk>
@@ -1896,7 +1894,7 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
 
             group_name = f'checkpoint_{load_it:05d}'
             if group_name not in h5:
-                raise ValueError(f'There is no checkpoint {group_name} in {checkpoint_path}')
+                raise ValueError(f'There is no checkpoint {group_name} in {checkpoint_path}')
 
             checkpoint_group = h5[f'checkpoint_{load_it:05d}']
             # TODO: clean this up

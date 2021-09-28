@@ -1699,7 +1699,7 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         problem_order=(1, 0, 2),
         convergence_method="admm",
         store_first_checkpoint=False,
-        init_params=None
+        init_params=None,
     ):
         super().__init__(
             max_its=max_its,
@@ -1713,7 +1713,7 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         self.sub_problems = sub_problems
         self.init = init
         self.convergence_check_frequency = convergence_check_frequency
-        self.auxiliary_variables = [{}, {}, {}]
+        self.auxiliary_variables = None
         self.absolute_tolerance = absolute_tol
         self.problem_order = problem_order
         self.convergence_method = convergence_method
@@ -1824,8 +1824,11 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
             Bi[:] = getattr(np.random, INIT_METHOD_B)(size=Bi.shape)
         self.decomposition.C[:] = getattr(np.random, INIT_METHOD_C)(size=self.decomposition.C.shape)
     
-    def _init_fit(self, X, max_its, initial_decomposition):
+    def _init_fit(self, X, max_its, initial_decomposition, auxiliary_variables):
         super()._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition)
+        if auxiliary_variables is None and self.auxiliary_variables is None:
+            auxiliary_variables = [{}, {}, {}]
+        self.auxiliary_variables = auxiliary_variables
 
         for i, sub_problem in enumerate(self.sub_problems):
             sub_problem.init_subproblem(i, self)
@@ -1834,6 +1837,26 @@ class BCDCoupledMatrixDecomposer(BaseDecomposer):
         self.prev_reg = self.regularisation_penalty
         self.prev_coupling_errors = self.coupling_errors
         self._rel_function_change = np.inf
+
+    def fit(self, X, y=None, *, max_its=None, initial_decomposition=None, auxiliary_variables=None):
+        """Fit a tensor decomposition model. 
+        
+        Precomputed components must be specified if init method is 'precomputed'.
+
+        Arguments
+        ---------
+        X : np.ndarray
+            The tensor to fit the model to
+        y : None
+            Ignored, included to follow sklearn standards.
+        max_its : int (optional)
+            If set, then this will override the class's max_its.
+        initial_decomposition : BaseDecomposedTensor (optional)
+            None (default) or a BaseDemposedTensor object containig the 
+            initial decomposition. If class's init is not 'precomputed' it is ignored.
+        """
+        self._init_fit(X=X, max_its=max_its, initial_decomposition=initial_decomposition, auxiliary_variables=auxiliary_variables)
+        self._fit()
     
     @property
     def reconstructed_X(self):
